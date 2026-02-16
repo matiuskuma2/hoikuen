@@ -1,7 +1,7 @@
 # あゆっこ保育園 業務自動化システム — 完全要件定義書
 
-> **Version**: 3.0 (2026-02-16)
-> **Status**: MVP事故防止版（レビュー反映済み）
+> **Version**: 3.1 (2026-02-16)
+> **Status**: MVP事故防止版（課金ルール最終修正済み）
 > **Author**: GenSpark AI Developer
 > **Reviewed by**: モギモギ（関屋紘之）
 
@@ -541,7 +541,7 @@ CREATE TABLE IF NOT EXISTS usage_facts (
   day INTEGER NOT NULL,
   
   -- 課金用の開始・終了
-  billing_start TEXT,                -- 課金開始 (HH:MM) = min(planned_start, actual_checkin)
+  billing_start TEXT,                -- 課金開始 (HH:MM) = planned_start (あれば) else actual_checkin
   billing_end TEXT,                  -- 課金終了 (HH:MM) = max(planned_end, actual_checkout)
   billing_minutes INTEGER,           -- 課金対象分数
   
@@ -1042,21 +1042,22 @@ FUNCTION compute_usage_fact(
     RETURN fact
 
   // ─── Step 2: 課金時間の決定 ───
-  // ★★★ 核心ルール (v3.0 修正) ★★★
-  //   start = min(planned_start, actual_checkin)  ← 早い方を採用
-  //   end   = max(planned_end, actual_checkout)   ← 遅い方を採用
+  // ★★★ 核心ルール (v3.1 最終確定) ★★★
+  //   start = planned_start（予定があれば常に予定を優先）
+  //           予定がなければ actual_checkin を使用
+  //   end   = max(planned_end, actual_checkout) ← 遅い方を採用
   //   どちらか欠けている場合はある方を使用
   //
-  // 例: 予定 9:00-15:00 / 実績 9:15-15:15 → 課金 9:00-15:15
-  // 例: 予定 9:00-15:00 / 実績 8:45-14:30 → 課金 8:45-15:00
+  // 設計意図: 予定時刻から課金する（遅刻しても予定開始で課金）
+  //   ただし予定表未提出の飛び込み利用は実績を使う
+  //
+  // 例: 予定 9:00-15:00 / 実績 9:15-15:15 → 課金 9:00-15:15 (予定開始優先)
+  // 例: 予定 9:00-15:00 / 実績 8:45-14:30 → 課金 9:00-15:00 (予定開始優先)
+  // 例: 予定なし / 実績 10:00-16:00 → 課金 10:00-16:00 (実績のみ)
   
   IF has_plan AND has_checkin:
-    // 開始: 予定と実績の早い方
-    plan_start_min = toMinutes(plan.planned_start)
-    actual_start_min = toMinutes(actual.actual_checkin)
-    billing_start = (actual_start_min < plan_start_min)
-      ? actual.actual_checkin
-      : plan.planned_start
+    // 開始: 予定を常に優先（遅刻しても予定開始時刻で課金）
+    billing_start = plan.planned_start
     
     // 終了: 予定と実績の遅い方（どちらか欠けたらある方）
     IF has_checkout AND plan.planned_end != null:
@@ -1815,15 +1816,18 @@ Screen 4: 園児管理 (/children)  ※ MVP後
 
 ---
 
-## 付録C: v3.0 変更履歴（v2.0からの差分）
+## 付録C: v3.1 変更履歴（v2.0からの差分）
 
 ```
-■ 課金時間ルール【重大修正】
-  旧: start = planned_start, end = actual_checkout
-  新: start = min(planned_start, actual_checkin)
-      end   = max(planned_end, actual_checkout)
-  理由: 木村さんの要望「予定9:00-15:00, 実績9:15-15:15 → 課金9:00-15:15」を
-        正確に反映。予定と実績の"広い方"を取るルール。
+■ 課金時間ルール【重大修正 → v3.1で再修正】
+  v2.0: start = planned_start, end = actual_checkout
+  v3.0: start = min(planned_start, actual_checkin) ← 誤り
+  v3.1: start = planned_start（あれば）else actual_checkin ← 最終確定
+        end   = max(planned_end, actual_checkout)
+  理由: 予定時刻から課金する（遅刻しても予定開始で課金）。
+        予定9:00-15:00, 実績9:15-15:15 → 課金9:00-15:15
+        予定9:00-15:00, 実績8:45-14:30 → 課金9:00-15:00
+        min()ではなく予定優先が正しいビジネスルール。
 
 ■ 給食実数表（個人）□【方針変更】
   旧: MVPで8行/園児ブロックに〇を書き込む

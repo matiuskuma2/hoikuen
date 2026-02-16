@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS usage_facts (
   month INTEGER NOT NULL,
   day INTEGER NOT NULL,
 
-  billing_start TEXT,                -- 課金開始 = min(planned_start, actual_checkin)
+  billing_start TEXT,                -- 課金開始 = planned_start (あれば) else actual_checkin
   billing_end TEXT,                  -- 課金終了 = max(planned_end, actual_checkout)
   billing_minutes INTEGER,
 
