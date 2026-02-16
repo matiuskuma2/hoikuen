@@ -1,5 +1,5 @@
 """
-あゆっこ保育園 業務自動化システム — Python Generator API v3.2
+あゆっこ保育園 業務自動化システム — Python Generator API v3.3
 FastAPI server that receives uploaded files and returns generated ZIP + meta JSON
 
 Architecture:
@@ -47,8 +47,9 @@ from engine.charge_calculator import generate_all_charge_lines
 from writers.daily_report_writer import write_daily_report
 from writers.billing_writer import write_billing_detail
 from writers.pdf_writer import generate_parent_statements
+from storage import FileStorage
 
-app = FastAPI(title="あゆっこ Generator API", version="3.2")
+app = FastAPI(title="あゆっこ Generator API", version="3.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,9 +63,9 @@ app.add_middleware(
 def health():
     return {
         "status": "ok",
-        "version": "3.2",
+        "version": "3.3",
         "engine": "python-openpyxl",
-        "phase": "B (parsers)",
+        "phase": "B-D (parsers+writers+guard)",
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -96,7 +97,8 @@ async def generate(
     }
 
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with FileStorage() as storage:
+            tmpdir = storage.base_dir
             # ═══════════════════════════════════════════
             # Phase 1: PARSING (B-1, B-2, B-3)
             # ═══════════════════════════════════════════
@@ -267,38 +269,59 @@ async def generate(
             )
 
             # ═══════════════════════════════════════════
-            # Phase 5: PACKAGING (ZIP)
+            # Phase 5: PACKAGING (ZIP — 3カテゴリフォルダ構成)
             # ═══════════════════════════════════════════
+            # ZIP構成（決め打ち）:
+            #   01_園内管理/日報_2026年02月.xlsx
+            #   02_経理提出/保育料明細_2026年02月.xlsx
+            #   03_保護者配布/利用明細書_田中_太郎_202602.pdf
+            #   03_保護者配布/利用明細書_佐藤_花子_202602.pdf
+            #   _meta.json
 
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                # Add Excel files (organized by category)
+                # Category 1: 園内管理 (university)
                 for key, info in output_files.items():
-                    if os.path.exists(info["path"]):
-                        zf.write(info["path"], info["name"])
+                    if info.get("category") == "university" and os.path.exists(info["path"]):
+                        zf.write(info["path"], f"01_園内管理/{info['name']}")
 
-                # Add PDFs in subfolder
+                # Category 2: 経理提出 (accounting)
+                for key, info in output_files.items():
+                    if info.get("category") == "accounting" and os.path.exists(info["path"]):
+                        zf.write(info["path"], f"02_経理提出/{info['name']}")
+
+                # Category 3: 保護者配布 (parents)
                 for pdf_info in pdf_files:
                     if os.path.exists(pdf_info["path"]):
-                        zf.write(pdf_info["path"], f"利用明細書/{pdf_info['name']}")
+                        zf.write(pdf_info["path"], f"03_保護者配布/{pdf_info['name']}")
 
-                # Add meta JSON with full details
+                # Meta JSON (root level)
                 stats["total_warnings"] = len([w for w in warnings if w.get("level") != "error"])
                 stats["total_errors"] = len([w for w in warnings if w.get("level") == "error"])
 
                 meta = {
                     "generated_at": datetime.now().isoformat(),
-                    "version": "3.2",
+                    "version": "3.3",
                     "year": year,
                     "month": month,
                     "stats": stats,
                     "warnings": warnings,
                     "submission_report": submission_report,
                     "output_files": [
-                        {"type": k, "name": v["name"], "purpose": v["purpose"], "category": v.get("category")}
+                        {"type": k, "name": v["name"], "purpose": v["purpose"],
+                         "category": v.get("category"), "folder": f"{'01_園内管理' if v.get('category')=='university' else '02_経理提出'}/{v['name']}"}
                         for k, v in output_files.items()
+                    ] + [
+                        {"type": "pdf", "name": p["name"], "category": "parents",
+                         "folder": f"03_保護者配布/{p['name']}"}
+                        for p in pdf_files
                     ],
                     "pdf_count": len(pdf_files),
+                    "folder_structure": {
+                        "01_園内管理": "園児登園確認表・児童実績表・◆保育時間（日報Excel）",
+                        "02_経理提出": "保育料明細（数量列のみ更新済み）",
+                        "03_保護者配布": "園児別 利用明細書PDF",
+                    },
                 }
                 zf.writestr("_meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
 
@@ -349,7 +372,8 @@ async def preview(
     warnings = []
 
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with FileStorage() as storage:
+            tmpdir = storage.base_dir
             # Parse lukumi
             lukumi_bytes = await lukumi_file.read()
             lukumi_path = os.path.join(tmpdir, "lukumi.xlsx")

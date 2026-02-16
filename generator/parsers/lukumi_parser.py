@@ -28,7 +28,7 @@ from engine.name_matcher import normalize_name
 _COL_PATTERNS = {
     "class_name":  ["クラス名", "クラス", "class"],
     "surname":     ["園児姓", "姓", "苗字"],
-    "firstname":   ["園児名", "名", "名前"],
+    "firstname":   ["園児名", "名前"],
     "date":        ["日付", "登降園日", "date"],
     "checkin":     ["登園日時", "登園", "checkin", "check-in"],
     "checkout":    ["降園日時", "降園", "checkout", "check-out"],
@@ -39,6 +39,10 @@ _COL_PATTERNS = {
     "birth_date":  ["生年月日", "誕生日", "birthday"],
     "age_class":   ["クラス年齢", "年齢", "歳児", "age"],
 }
+
+# ★ "名" 単独は "クラス名" や "姓名" にも含まれるため、
+#   部分一致 (pattern in cell_str) では誤検出が起きる。
+#   _detect_columns で「完全一致を優先」するロジックで対応。
 
 
 def parse_lukumi(file_path: str, target_year: int, target_month: int) -> tuple[list[dict], list[dict], list[dict]]:
@@ -203,6 +207,14 @@ def _parse_csv(file_path: str, target_year: int, target_month: int):
 def _detect_columns(rows: list[tuple]) -> tuple[dict | None, int, list[dict]]:
     """
     Auto-detect column mapping from header row.
+    
+    ★ 検出ロジック:
+      Pass 1: 完全一致 (cell_str == pattern) — 最も信頼性が高い
+      Pass 2: 部分一致 (pattern in cell_str) — 曖昧だが fallback
+      ※ 一度マッピングされた列は後のパスで上書きしない
+      ※ "名" 単独パターンは "クラス名" にも含まれるため、
+         firstname は "園児名", "名前" のみで検出。fallback で列 C (index 2) を仮定。
+    
     Returns (col_map, header_row_index, warnings)
     """
     warnings = []
@@ -211,18 +223,51 @@ def _detect_columns(rows: list[tuple]) -> tuple[dict | None, int, list[dict]]:
     for header_idx in range(min(5, len(rows))):
         header = rows[header_idx]
         col_map = {}
+        used_cols = set()  # Track which column indices are already assigned
 
+        # ── Pass 1: 完全一致 ──
         for col_idx, cell_val in enumerate(header):
             if cell_val is None:
                 continue
             cell_str = str(cell_val).strip()
 
             for field, patterns in _COL_PATTERNS.items():
+                if field in col_map:
+                    continue  # Already mapped
                 for pattern in patterns:
-                    if pattern.lower() == cell_str.lower() or pattern in cell_str:
-                        if field not in col_map:
-                            col_map[field] = col_idx
+                    if pattern.lower() == cell_str.lower():
+                        col_map[field] = col_idx
+                        used_cols.add(col_idx)
                         break
+
+        # ── Pass 2: 部分一致 (未マッチのフィールドのみ) ──
+        for col_idx, cell_val in enumerate(header):
+            if cell_val is None or col_idx in used_cols:
+                continue
+            cell_str = str(cell_val).strip()
+
+            for field, patterns in _COL_PATTERNS.items():
+                if field in col_map:
+                    continue
+                for pattern in patterns:
+                    if pattern in cell_str and len(pattern) >= 2:
+                        # ★ 2文字以上のパターンのみ部分一致を許可
+                        # "名" (1文字) は誤検出しやすいので除外
+                        col_map[field] = col_idx
+                        used_cols.add(col_idx)
+                        break
+
+        # ── Fallback: firstname が未検出なら surname の隣 (右1列) を仮定 ──
+        if "firstname" not in col_map and "surname" in col_map:
+            next_col = col_map["surname"] + 1
+            if next_col < len(header) and next_col not in used_cols:
+                col_map["firstname"] = next_col
+                used_cols.add(next_col)
+                warnings.append({
+                    "level": "info", "child_name": None,
+                    "message": f"園児名列を自動検出できず。姓列の右隣(列{next_col + 1})を名列と仮定します",
+                    "suggestion": None,
+                })
 
         # Check if we have minimum required columns
         required = {"surname", "date", "lukumi_id"}

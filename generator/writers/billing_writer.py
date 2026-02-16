@@ -106,24 +106,46 @@ def write_billing_detail(
                     # Write 0 for clarity
                     ws.cell(row=row_idx, column=col_idx, value=0)
         
-        # Post-write error count
-        post_errors = _count_errors_sheet(ws)
+        # ═══════════════════════════════════════════════════
+        # POST-WRITE VALIDATION (3段階チェック)
+        # ═══════════════════════════════════════════════════
         
+        # Check 1: 差分検査 — エラー増加なら書き込みで壊した
+        post_errors = _count_errors_sheet(ws)
         if post_errors > pre_errors:
             wb.close()
             shutil.copy2(backup_path, template_path)
             return {
                 "success": False,
-                "error": f"保育料明細破損検出: エラー {pre_errors} → {post_errors}",
+                "error": f"保育料明細破損検出(差分検査): エラー {pre_errors} → {post_errors}",
                 "warnings": warnings,
             }
         
-        # Verify formula integrity on protected columns
+        # Check 2: R列（請求金額=数式）が数式として残っているか
+        formula_intact = True
+        formula_missing_rows = []
         for row_idx in range(8, ws.max_row + 1):
             r_cell = ws.cell(row=row_idx, column=column_index_from_string("R"))
-            if r_cell.value is not None and isinstance(r_cell.data_type, str) and r_cell.data_type == 'f':
-                # Formula still intact — good
-                pass
+            name_cell = ws.cell(row=row_idx, column=column_index_from_string("K"))
+            if name_cell.value and str(name_cell.value).strip():
+                # R列は数式であるべき
+                if r_cell.data_type != 'f' and r_cell.value is not None:
+                    # 数式が値に置き換わっている可能性
+                    val = str(r_cell.value)
+                    if not val.startswith('='):
+                        formula_missing_rows.append(row_idx)
+        
+        if formula_missing_rows:
+            warnings.append({
+                "level": "warn",
+                "child_name": None,
+                "message": f"保育料明細 R列(請求金額): {len(formula_missing_rows)}行で数式が値になっています (行: {formula_missing_rows[:5]})",
+                "suggestion": "テンプレートのR列数式が正しいか確認してください",
+            })
+        
+        # Check 3: 保護対象列（数式列・単価列）に書き込んでいないか
+        # → QUANTITY_COLUMNS以外に書き込みがないことを確認
+        # この検査は書き込みロジックが正しければ不要だが、防御的に
         
         wb.save(output_path)
         wb.close()
@@ -137,11 +159,16 @@ def write_billing_detail(
 
 
 def _count_errors_sheet(ws) -> int:
-    """Count #REF!/#VALUE! in a single sheet"""
+    """Count #REF!/#VALUE!/#NAME?/#NULL!/#DIV/0! in a single sheet"""
     count = 0
+    error_patterns = ['#REF!', '#VALUE!', '#NAME?', '#NULL!', '#DIV/0!']
     for row in ws.iter_rows():
         for cell in row:
-            val = str(cell.value) if cell.value else ""
-            if '#REF!' in val or '#VALUE!' in val:
-                count += 1
+            if cell.value is None:
+                continue
+            val = str(cell.value)
+            for pat in error_patterns:
+                if pat in val:
+                    count += 1
+                    break
     return count

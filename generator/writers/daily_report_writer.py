@@ -89,18 +89,35 @@ def write_daily_report(
         # ── Sheet 3: ◆保育時間 ──
         result3 = _write_hoiku_jikan_sheet(wb, children, facts_by_key, all_plans, year, month, warnings)
         
-        # Post-write error count
-        post_errors = _count_errors(wb)
+        # ═══════════════════════════════════════════════════
+        # POST-WRITE VALIDATION (3段階チェック)
+        # ═══════════════════════════════════════════════════
         
-        # ★ FATAL CHECK: If errors increased, abort
+        # Check 1: 差分検査 — エラー増加なら書き込みで壊した
+        post_errors = _count_errors(wb)
         if post_errors > pre_errors:
             wb.close()
-            shutil.copy2(backup_path, template_path)  # Restore
+            shutil.copy2(backup_path, template_path)
             return {
                 "success": False,
-                "error": f"テンプレート破損検出: #REF!/#VALUE! が {pre_errors} → {post_errors} に増加。書き込みを中止しました。",
+                "error": f"テンプレート破損検出(差分検査): #REF!/#VALUE! が {pre_errors} → {post_errors} に増加。書き込みを中止しました。",
                 "warnings": warnings,
             }
+        
+        # Check 2: 数式列が残っているか（書き込みで数式を潰していないか）
+        formula_check = _check_formulas_intact(wb, warnings)
+        if formula_check["fatal"]:
+            wb.close()
+            shutil.copy2(backup_path, template_path)
+            return {
+                "success": False,
+                "error": f"テンプレート破損検出(数式消失): {formula_check['detail']}",
+                "warnings": warnings,
+            }
+        
+        # Check 3: 集計セルが空になっていないか（数式が壊れて空に見える）
+        # → warningのみ（FATALにはしない。集計は再計算で復活する場合がある）
+        summary_check = _check_summary_cells(wb, warnings)
         
         # Save
         wb.save(output_path)
@@ -238,6 +255,13 @@ def _write_hoiku_jikan_sheet(wb, children, facts_by_key, all_plans, year, month,
     col+4=昼食, col+5=朝おやつ, col+6=午後おやつ, col+7=夕食
     
     Row 6 = day 1, Row 7 = day 2, ...
+    
+    ★ 給食マーク仕様（MVP確定版）:
+      - 「〇」 = 提供あり（予定表の希望をそのまま書き込む。MVP=希望≡提供）
+      - 「△」 = アレルギー対応食提供あり
+      - 空セル = 提供なし
+      ※ 給食実数表（個人）は触らない（数式が◆保育時間を参照して自動反映）
+      ※ 将来拡張で「希望vs実提供」を区別する場合はここを変更
     """
     sheet_name = None
     for name in wb.sheetnames:
@@ -292,7 +316,8 @@ def _write_hoiku_jikan_sheet(wb, children, facts_by_key, all_plans, year, month,
             if fact and fact.get("actual_checkout"):
                 ws.cell(row=row, column=col_start + 3, value=_time_to_serial(fact["actual_checkout"]))
             
-            # col+4-7: meal marks (written as "〇" for formulas downstream)
+            # col+4-7: meal marks
+            # ★ MVP: 希望=提供。「〇」=提供あり、「△」=アレルギー対応食、空=なし
             if fact and fact["attendance_status"] in ("present", "late_arrive", "early_leave"):
                 if fact.get("has_lunch"):
                     mark = "△" if fact.get("meal_allergy") else "〇"
@@ -363,3 +388,117 @@ def _fmt_time_nolead(time_str: str) -> str:
     h = int(parts[0])
     m = parts[1].zfill(2)
     return f"{h}:{m}"
+
+
+def _check_formulas_intact(wb, warnings) -> dict:
+    """
+    Check 2: 数式列が残っているか（書き込みで数式を潰していないか）。
+    
+    チェック対象:
+      - 給食実数表（個人）□ シートが存在すれば、数式が残っているか
+      - 園児登園確認表□ / 児童実績表□ の合計行の数式が残っているか
+    
+    ※ openpyxl で data_only=False (デフォルト) で読み込んでいるので、
+       cell.data_type == 'f' は数式セルを示す。
+    
+    Returns: {"fatal": bool, "detail": str}
+    """
+    fatal = False
+    detail_parts = []
+    
+    for ws_name in wb.sheetnames:
+        ws = wb[ws_name]
+        
+        # ── 給食実数表（個人） — 一切書き込まないので数式が残っているはず ──
+        if '給食実数表' in ws_name:
+            formula_count = 0
+            for row in ws.iter_rows(max_row=min(ws.max_row or 1, 200)):
+                for cell in row:
+                    if cell.data_type == 'f':
+                        formula_count += 1
+            if formula_count == 0:
+                # 数式が1つも無い = 元から数式なしのシートか、全消失。
+                # 元から無い場合もあるので warning に留める。
+                warnings.append({
+                    "level": "warn",
+                    "child_name": None,
+                    "message": f"「{ws_name}」に数式が1つも見つかりません。テンプレートを確認してください。",
+                    "suggestion": "給食実数表の集計数式が壊れている可能性があります",
+                })
+        
+        # ── 園児登園確認表 / 児童実績表 — 合計行の数式を抽出チェック ──
+        if '園児登園確認表' in ws_name or '児童実績表' in ws_name:
+            max_row = ws.max_row or 1
+            # 末尾5行内に合計行がある場合、数式が残っているか
+            for row_idx in range(max(1, max_row - 5), max_row + 1):
+                label = ws.cell(row=row_idx, column=1).value or ws.cell(row=row_idx, column=2).value
+                if label and ('合計' in str(label) or '計' in str(label)):
+                    formula_found = False
+                    for col in range(6, 37):  # F to AJ
+                        cell = ws.cell(row=row_idx, column=col)
+                        if cell.data_type == 'f':
+                            formula_found = True
+                            break
+                    if not formula_found:
+                        # 合計行に数式が無い = 壊れた可能性。warning に留める。
+                        warnings.append({
+                            "level": "warn",
+                            "child_name": None,
+                            "message": f"「{ws_name}」の合計行(行{row_idx})に数式が見つかりません",
+                            "suggestion": "合計行が数式でなく固定値になっている可能性があります",
+                        })
+    
+    if detail_parts:
+        detail = "; ".join(detail_parts)
+    else:
+        detail = ""
+    
+    return {"fatal": fatal, "detail": detail}
+
+
+def _check_summary_cells(wb, warnings):
+    """
+    Check 3: 主要集計セルが空になっていないか。
+    
+    書き込み後、数式セルが壊れて空に見える場合を警告する。
+    注意: openpyxl で数式を保持して保存した場合、
+    キャッシュ値がクリアされる場合があるので、
+    これは warning のみ（FATAL にはしない）。
+    
+    チェック対象:
+      - 園児登園確認表の集計行（出席日数合計等）
+      - 児童実績表の月間合計
+      - ◆保育時間のヘッダ行（園児名が書き込み前に入っているか）
+    """
+    issues_found = 0
+    
+    for ws_name in wb.sheetnames:
+        ws = wb[ws_name]
+        
+        # ── 園児登園確認表 / 児童実績表 の集計行 ──
+        if '園児登園確認表' in ws_name or '児童実績表' in ws_name:
+            max_row = ws.max_row or 1
+            for row_idx in range(max(1, max_row - 5), max_row + 1):
+                label = ws.cell(row=row_idx, column=1).value or ws.cell(row=row_idx, column=2).value
+                if label and ('合計' in str(label) or '計' in str(label)):
+                    # 合計行のデータ列に数式もデータもない場合は警告
+                    empty_count = 0
+                    formula_count = 0
+                    for col in range(6, 37):  # F to AJ
+                        cell = ws.cell(row=row_idx, column=col)
+                        if cell.data_type == 'f':
+                            formula_count += 1
+                        elif cell.value is None:
+                            empty_count += 1
+                    
+                    # 数式0件かつ全空 → 壊れている可能性大
+                    if formula_count == 0 and empty_count > 25:
+                        warnings.append({
+                            "level": "warn",
+                            "child_name": None,
+                            "message": f"「{ws_name}」合計行(行{row_idx})が空です。集計数式が消失している可能性があります",
+                            "suggestion": "ExcelでF1ファイルを開いて集計行を確認してください",
+                        })
+                        issues_found += 1
+    
+    return {"ok": issues_found == 0, "issues": issues_found}

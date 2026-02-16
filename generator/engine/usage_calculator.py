@@ -1,9 +1,19 @@
 """
-Usage Facts 計算エンジン (Python版)
+Usage Facts 計算エンジン (Python版) — v3.3
 
-v3.1 課金ルール:
+課金ルール (v3.1確定版, min禁止):
   billing_start = planned_start (あれば) else actual_checkin
   billing_end   = max(planned_end, actual_checkout)
+
+  ★ min(planned_start, actual_checkin) は絶対に使わない。
+    事故防止のため、startは「予定があれば予定」の一択。
+    例: 予定 9:00-15:00, 実績 9:15-15:15 → 課金 9:00-15:15
+    例: 予定なし, 実績 10:00-16:00 → 課金 10:00-16:00
+
+給食マーク (MVP仕様):
+  希望 = 提供 として「〇」を書き込む。
+  希望なし = 空セル。
+  ※ 実提供と希望の区別は将来拡張で対応。
 """
 
 from engine.name_matcher import normalize_name
@@ -132,14 +142,16 @@ def _compute_single_fact(
         fact["exception_notes"] = "予定あり・実績なし（欠席）"
         return fact
     
-    # Step 2: Billing time (v3.1 rule)
+    # Step 2: Billing time (v3.1確定ルール — minは使わない)
     notes = []
     
     if has_plan and has_checkin:
-        # ★ Start: ALWAYS use planned_start (charge from scheduled time)
+        # ★ billing_start = planned_start（固定）。
+        # min(planned_start, actual_checkin) は絶対に使わない。
         billing_start = plan["planned_start"]
         
-        # End: max(planned_end, actual_checkout)
+        # ★ billing_end = max(planned_end, actual_checkout)。
+        # 予定と実績の大きい方を取る。
         if has_checkout and plan.get("planned_end"):
             plan_end_min = to_minutes(plan["planned_end"])
             actual_end_min = to_minutes(actual["actual_checkout"])
@@ -208,6 +220,10 @@ def _compute_single_fact(
         fact["spot_30min_blocks"] = math.ceil(fact["billing_minutes"] / 30)
     
     # Step 6: Meal flags
+    # ★ MVP仕様: 予定表の給食希望をそのまま「提供」として扱う。
+    #   has_lunch=1 → ◆保育時間に「〇」を書き込む → 給食実数表は数式で自動反映
+    #   予定表なし(walk-in)の場合は、在園時間帯から推定
+    #   早退で提供時間前に帰った場合はフラグを0に修正
     if fact["attendance_status"] in ("present", "late_arrive"):
         if has_plan:
             fact["has_lunch"] = plan.get("lunch_flag", 0)

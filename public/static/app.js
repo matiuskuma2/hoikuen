@@ -175,18 +175,32 @@ async function startGeneration() {
       return;
     }
 
-    updateProgress(85, 'ZIPを準備中...');
+    updateProgress(85, 'ZIPを展開中...');
 
     const blob = await response.blob();
-    const warningsCount = parseInt(response.headers.get('X-Warnings-Count') || '0');
-    const childrenCount = parseInt(response.headers.get('X-Children-Processed') || '0');
 
-    // Parse meta JSON from header
+    // ★ Extract full _meta.json from ZIP (JSZip)
     let meta = null;
     try {
-      const metaStr = response.headers.get('X-Meta-Json');
-      if (metaStr) meta = JSON.parse(metaStr);
-    } catch (e) { /* ignore */ }
+      const zip = await JSZip.loadAsync(blob);
+      const metaFile = zip.file('_meta.json');
+      if (metaFile) {
+        const metaText = await metaFile.async('text');
+        meta = JSON.parse(metaText);
+      }
+    } catch (e) {
+      console.warn('Failed to extract _meta.json from ZIP:', e);
+      // Fallback: try header
+      try {
+        const metaStr = response.headers.get('X-Meta-Json');
+        if (metaStr) meta = JSON.parse(metaStr);
+      } catch (e2) { /* ignore */ }
+    }
+
+    const warnings = meta?.warnings || [];
+    const stats = meta?.stats || {};
+    const childrenCount = stats.children_processed || parseInt(response.headers.get('X-Children-Processed') || '0');
+    const warningsCount = warnings.length;
 
     state.lastMeta = meta;
     state.lastBlob = blob;
@@ -194,7 +208,7 @@ async function startGeneration() {
 
     updateProgress(100, `✅ 生成完了！ ${childrenCount}名処理, ${formatFileSize(blob.size)}`);
 
-    showSuccessResult(blob, year, month, warningsCount, childrenCount, meta);
+    showSuccessResult(blob, year, month, warningsCount, childrenCount, meta, warnings);
 
   } catch (error) {
     updateProgress(0, `接続エラー: ${error.message}`);
@@ -227,18 +241,28 @@ function updateProgress(pct, text) {
 
 // ===== Results Display =====
 
-function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta) {
+function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta, warnings) {
   const resultDiv = document.getElementById('step-result');
   resultDiv.classList.remove('hidden');
   resultDiv.scrollIntoView({ behavior: 'smooth' });
 
   const subReport = meta?.submission_report;
   const stats = meta?.stats || {};
-  const warnings = meta?.warnings || [];
+  // warnings is already passed as parameter from _meta.json extraction
 
   // Show download button
   const dlBtn = document.getElementById('btn-download-zip');
   dlBtn.style.display = '';
+
+  // ── Submission status panel (B-4) — show FIRST (needs-attention at top) ──
+  if (subReport && (subReport.not_submitted?.length > 0 || subReport.unmatched_schedules?.length > 0)) {
+    document.getElementById('result-submission').innerHTML = _renderSubmissionPanel(subReport);
+  } else if (subReport) {
+    // All submitted — collapsed
+    document.getElementById('result-submission').innerHTML = _renderSubmissionPanel(subReport);
+  } else {
+    document.getElementById('result-submission').innerHTML = '';
+  }
 
   // ── Output cards (3 categories) ──
   const hasDailyTemplate = state.files.daily_template.length > 0;
@@ -247,15 +271,15 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
 
   document.getElementById('result-files').innerHTML = `
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-      ${_renderOutputCard('university', '園内管理用', 'fas fa-school', 'green',
+      ${_renderOutputCard('university', '01_園内管理', 'fas fa-school', 'green',
         '園児登園確認表・児童実績表・◆保育時間',
         hasDailyTemplate ? '日報Excel内シート書き込み済' : 'テンプレ未指定（スキップ）',
         hasDailyTemplate)}
-      ${_renderOutputCard('accounting', '経理提出用', 'fas fa-file-invoice-dollar', 'purple',
+      ${_renderOutputCard('accounting', '02_経理提出', 'fas fa-file-invoice-dollar', 'purple',
         '保育料明細（数量列のみ更新）',
         hasBillingTemplate ? '明細Excel数量列更新済' : 'テンプレ未指定（スキップ）',
         hasBillingTemplate)}
-      ${_renderOutputCard('parents', '保護者配布用', 'fas fa-file-pdf', 'blue',
+      ${_renderOutputCard('parents', '03_保護者配布', 'fas fa-file-pdf', 'blue',
         `利用明細書PDF（${pdfCount}名分）`,
         `${pdfCount}名分のPDFを自動生成`, true)}
     </div>
@@ -263,6 +287,7 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
       <div class="text-sm text-gray-700">
         <i class="fas fa-file-archive text-blue-500 mr-1"></i>
         <strong>出力ZIP</strong>: ${formatFileSize(blob.size)}
+        <span class="text-xs text-gray-500 ml-2">（3フォルダ + _meta.json）</span>
       </div>
       <button onclick="downloadZip()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
         <i class="fas fa-download mr-1"></i>ZIP一括ダウンロード
@@ -270,12 +295,7 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
     </div>
   `;
 
-  // ── Submission status panel (B-4) ──
-  if (subReport) {
-    document.getElementById('result-submission').innerHTML = _renderSubmissionPanel(subReport);
-  } else {
-    document.getElementById('result-submission').innerHTML = '';
-  }
+  // (submission panel already rendered above — at the top)
 
   // ── Stats ──
   document.getElementById('result-stats').innerHTML = `

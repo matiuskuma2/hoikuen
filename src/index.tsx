@@ -218,14 +218,15 @@ function mainPage(): string {
         </button>
       </div>
       <div class="p-6">
+        <div id="result-submission" class="mb-4"></div>
         <div id="result-files" class="space-y-3"></div>
-        <div id="result-submission" class="mt-4"></div>
         <div id="result-warnings" class="mt-4"></div>
         <div id="result-stats" class="mt-4 text-sm text-gray-600"></div>
       </div>
     </div>
 
   </main>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>`;
