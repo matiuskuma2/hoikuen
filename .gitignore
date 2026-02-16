@@ -1,6 +1,12 @@
 # Dependencies
 node_modules/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
 # Runtime data
 pids
 *.pid
@@ -38,3 +44,13 @@ Thumbs.db
 
 # Uploaded test files
 uploaded_files/
+
+# Test data
+tests/*.xlsx
+tests/*.csv
+tests/*.pdf
+tests/*.zip
+__pycache__/
+*.pyc
+.wrangler/
+dist/
