@@ -424,6 +424,161 @@ async def preview(
         )
 
 
+@app.post("/dashboard")
+async def dashboard(
+    year: int = Form(...),
+    month: int = Form(...),
+    lukumi_file: UploadFile = File(...),
+    schedule_files: list[UploadFile] = File(default=[]),
+):
+    """
+    月間ダッシュボード用データ生成。
+    カレンダー表示に必要な全情報をJSON返却。
+    ZIP生成はしない（軽量）。
+    """
+    warnings: list[dict] = []
+
+    try:
+        with FileStorage() as storage:
+            tmpdir = storage.base_dir
+
+            # Parse Lukumi
+            lukumi_bytes = await lukumi_file.read()
+            lukumi_path = os.path.join(tmpdir, lukumi_file.filename or "lukumi.xlsx")
+            with open(lukumi_path, "wb") as f:
+                f.write(lukumi_bytes)
+            attendance_records, lukumi_children, lukumi_warnings = parse_lukumi(
+                lukumi_path, year, month
+            )
+            warnings.extend(lukumi_warnings)
+
+            # Parse schedules
+            schedule_file_paths = []
+            for sf in schedule_files:
+                sf_bytes = await sf.read()
+                sf_path = os.path.join(tmpdir, sf.filename or f"schedule_{len(schedule_file_paths)}.xlsx")
+                with open(sf_path, "wb") as f:
+                    f.write(sf_bytes)
+                schedule_file_paths.append((sf_path, sf.filename or "unknown.xlsx"))
+
+            all_plans, schedule_child_names, schedule_warnings = parse_multiple_schedules(
+                schedule_file_paths, year, month
+            )
+            warnings.extend(schedule_warnings)
+
+            # Match
+            children, match_warnings, unmatched = match_children(
+                lukumi_children, schedule_child_names, []
+            )
+            warnings.extend(match_warnings)
+
+            # Compute usage facts
+            usage_facts = compute_all_usage_facts(
+                children, all_plans, attendance_records, year, month
+            )
+
+            # Submission report
+            submission_report = generate_submission_report(children, schedule_child_names)
+
+            # ── Build dashboard data ──
+            days_in_month = calendar.monthrange(year, month)[1]
+
+            # Daily summary
+            daily_summary = []
+            for day in range(1, days_in_month + 1):
+                day_facts = [f for f in usage_facts if f["day"] == day
+                             and f["attendance_status"] in ("present", "late_arrive", "early_leave")]
+                plan_only = [f for f in usage_facts if f["day"] == day
+                             and f["attendance_status"] == "absent"
+                             and f.get("planned_start")]
+
+                children_detail = []
+                for f in day_facts:
+                    children_detail.append({
+                        "name": f["child_name"],
+                        "child_id": f["child_id"],
+                        "planned_start": f.get("planned_start"),
+                        "planned_end": f.get("planned_end"),
+                        "actual_checkin": f.get("actual_checkin"),
+                        "actual_checkout": f.get("actual_checkout"),
+                        "billing_start": f.get("billing_start"),
+                        "billing_end": f.get("billing_end"),
+                        "billing_minutes": f.get("billing_minutes"),
+                        "status": f["attendance_status"],
+                        "enrollment_type": next(
+                            (c.get("enrollment_type", "月極") for c in children
+                             if c.get("lukumi_id") == f["child_id"]), "月極"
+                        ),
+                        "has_lunch": f.get("has_lunch", 0),
+                        "has_am_snack": f.get("has_am_snack", 0),
+                        "has_pm_snack": f.get("has_pm_snack", 0),
+                        "has_dinner": f.get("has_dinner", 0),
+                        "is_early_morning": f.get("is_early_morning", 0),
+                        "is_extension": f.get("is_extension", 0),
+                        "is_night": f.get("is_night", 0),
+                        "is_sick": f.get("is_sick", 0),
+                        "exception_notes": f.get("exception_notes"),
+                    })
+
+                # Weekday
+                import datetime as dt_mod
+                d = dt_mod.date(year, month, day)
+                weekdays_jp = ['月', '火', '水', '木', '金', '土', '日']
+                weekday = weekdays_jp[d.weekday()]
+                is_weekend = d.weekday() >= 5
+
+                daily_summary.append({
+                    "day": day,
+                    "weekday": weekday,
+                    "is_weekend": is_weekend,
+                    "total_children": len(day_facts),
+                    "planned_absent": len(plan_only),
+                    "lunch_count": sum(1 for f in day_facts if f.get("has_lunch")),
+                    "am_snack_count": sum(1 for f in day_facts if f.get("has_am_snack")),
+                    "pm_snack_count": sum(1 for f in day_facts if f.get("has_pm_snack")),
+                    "dinner_count": sum(1 for f in day_facts if f.get("has_dinner")),
+                    "early_morning_count": sum(1 for f in day_facts if f.get("is_early_morning")),
+                    "extension_count": sum(1 for f in day_facts if f.get("is_extension")),
+                    "night_count": sum(1 for f in day_facts if f.get("is_night")),
+                    "sick_count": sum(1 for f in day_facts if f.get("is_sick")),
+                    "children": children_detail,
+                })
+
+            # Children summary (for sidebar)
+            children_summary = []
+            for c in children:
+                cid = c.get("lukumi_id", "")
+                c_facts = [f for f in usage_facts if f["child_id"] == cid
+                           and f["attendance_status"] in ("present", "late_arrive", "early_leave")]
+                children_summary.append({
+                    "name": c["name"],
+                    "child_id": cid,
+                    "class_name": c.get("class_name", ""),
+                    "age_class": c.get("age_class"),
+                    "enrollment_type": c.get("enrollment_type", "月極"),
+                    "has_schedule": c.get("has_schedule", False),
+                    "attendance_days": len(c_facts),
+                })
+
+            return {
+                "year": year,
+                "month": month,
+                "days_in_month": days_in_month,
+                "total_children": len(children),
+                "daily_summary": daily_summary,
+                "children_summary": children_summary,
+                "submission_report": submission_report,
+                "warnings": warnings,
+            }
+
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "warnings": warnings}
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8787)

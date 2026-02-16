@@ -1,19 +1,23 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v3.3
- * Single-screen MVP: Upload → Generate → Results with 3-category output
+ * あゆっこ業務自動化 — Frontend Application v4.0
  * 
- * Architecture: UI → Hono proxy → Python Generator → ZIP
+ * Architecture: UI → Hono proxy → Python Generator
  * 
- * v3.3 Enhancements:
+ * v4.0: Calendar-style 利用予定ビュー (primary UI for Kimura)
+ *   - Tab navigation: Dashboard / Upload / Generate
+ *   - Monthly calendar grid with daily counts
+ *   - Day-click detail panel (child list with times)
+ *   - Summary stats bar (total children, meals, early/ext/night)
+ * 
+ * v3.3 (retained):
  *   - Full meta-driven results display from _meta.json
- *   - 3-category output cards (university, accounting, parents)
- *   - Expanded warnings panel with child names and suggestions
- *   - Submission status panel with submitted/not-submitted/unmatched
- *   - Real progress messages
- *   - Improved error and fatal corruption display
+ *   - 3-category output cards, warnings panel, submission panel
  */
 
-// State
+// ═══════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════
+
 const state = {
   files: {
     lukumi: [],
@@ -25,9 +29,46 @@ const state = {
   lastMeta: null,
   lastBlob: null,
   lastFilename: null,
+  // Dashboard state
+  dashboardData: null,
+  dashboardLoading: false,
+  selectedDay: null,
+  activeTab: 'dashboard',
 };
 
-// ===== Drag & Drop =====
+// ═══════════════════════════════════════════
+// TAB NAVIGATION
+// ═══════════════════════════════════════════
+
+function switchTab(tab) {
+  state.activeTab = tab;
+  const tabs = ['dashboard', 'upload', 'generate'];
+  tabs.forEach(t => {
+    const panel = document.getElementById(`panel-${t}`);
+    const tabBtn = document.getElementById(`tab-${t}`);
+    if (panel) panel.classList.toggle('hidden', t !== tab);
+    if (tabBtn) {
+      tabBtn.classList.toggle('tab-active', t === tab);
+      tabBtn.classList.toggle('tab-inactive', t !== tab);
+    }
+  });
+
+  // If switching to generate tab, show/hide panels
+  if (tab === 'generate') {
+    const hasResult = document.getElementById('step-result') &&
+      !document.getElementById('step-result').classList.contains('hidden');
+    const hasProgress = document.getElementById('step-progress') &&
+      !document.getElementById('step-progress').classList.contains('hidden');
+    if (!hasResult && !hasProgress) {
+      document.getElementById('generate-empty').classList.remove('hidden');
+    }
+  }
+}
+
+// ═══════════════════════════════════════════
+// DRAG & DROP / FILE MANAGEMENT
+// ═══════════════════════════════════════════
+
 function handleDragOver(e) {
   e.preventDefault();
   e.currentTarget.classList.add('drag-over');
@@ -99,14 +140,430 @@ function updateSummary() {
     if (hasBilling) parts.push('明細テンプレ: ✓');
     text.textContent = parts.join(' / ');
 
-    const btn = document.getElementById('btn-generate');
-    if (btn) btn.disabled = !hasLukumi;
+    const btnGen = document.getElementById('btn-generate');
+    if (btnGen) btnGen.disabled = !hasLukumi;
+    const btnDash = document.getElementById('btn-dashboard-load');
+    if (btnDash) btnDash.disabled = !hasLukumi;
   } else {
     summary.classList.add('hidden');
   }
 }
 
-// ===== Generation =====
+// ═══════════════════════════════════════════
+// DASHBOARD: LOAD DATA
+// ═══════════════════════════════════════════
+
+async function loadDashboard() {
+  if (state.dashboardLoading) return;
+  if (state.files.lukumi.length === 0) {
+    alert('ルクミー登降園データをアップロードしてください');
+    return;
+  }
+
+  state.dashboardLoading = true;
+  const btn = document.getElementById('btn-dashboard-load');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>読込中...';
+  }
+
+  try {
+    const year = parseInt(document.getElementById('year-select').value);
+    const month = parseInt(document.getElementById('month-select').value);
+
+    const formData = new FormData();
+    formData.append('year', year.toString());
+    formData.append('month', month.toString());
+    formData.append('lukumi_file', state.files.lukumi[0]);
+    state.files.schedule.forEach(f => formData.append('schedule_files', f));
+
+    const response = await fetch('/api/jobs/dashboard', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error || `HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    state.dashboardData = data;
+    state.selectedDay = null;
+
+    // Switch to dashboard tab and render
+    switchTab('dashboard');
+    renderDashboard(data);
+
+  } catch (error) {
+    alert(`ダッシュボードの読み込みに失敗しました: ${error.message}`);
+  } finally {
+    state.dashboardLoading = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-calendar-alt mr-1"></i>ダッシュボード表示';
+    }
+  }
+}
+
+// ═══════════════════════════════════════════
+// DASHBOARD: RENDER
+// ═══════════════════════════════════════════
+
+function renderDashboard(data) {
+  // Hide empty state, show content
+  document.getElementById('dashboard-empty').classList.add('hidden');
+  document.getElementById('dashboard-content').classList.remove('hidden');
+
+  // Month title
+  document.getElementById('dashboard-month-title').textContent =
+    `${data.year}年${data.month}月の利用予定`;
+
+  // Summary stats bar
+  const ds = data.daily_summary || [];
+  const totalAttendanceDays = ds.reduce((s, d) => s + d.total_children, 0);
+  const maxChildren = Math.max(...ds.map(d => d.total_children), 0);
+  const totalEarly = ds.reduce((s, d) => s + d.early_morning_count, 0);
+  const totalExt = ds.reduce((s, d) => s + d.extension_count, 0);
+  const totalNight = ds.reduce((s, d) => s + d.night_count, 0);
+  const totalLunch = ds.reduce((s, d) => s + d.lunch_count, 0);
+
+  document.getElementById('dashboard-month-stats').innerHTML = `
+    <span class="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-medium">
+      <i class="fas fa-child mr-1"></i>${data.total_children}名登録
+    </span>
+    <span class="bg-green-50 text-green-700 px-3 py-1 rounded-full text-xs font-medium">
+      最大${maxChildren}名/日
+    </span>
+    ${totalEarly > 0 ? `<span class="bg-orange-50 text-orange-700 px-3 py-1 rounded-full text-xs font-medium">🕒早朝 ${totalEarly}回</span>` : ''}
+    ${totalExt > 0 ? `<span class="bg-purple-50 text-purple-700 px-3 py-1 rounded-full text-xs font-medium">🕘延長 ${totalExt}回</span>` : ''}
+    ${totalNight > 0 ? `<span class="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-xs font-medium">🌙夜間 ${totalNight}回</span>` : ''}
+  `;
+
+  // Alerts (submission issues)
+  const alertsDiv = document.getElementById('dashboard-alerts');
+  const subReport = data.submission_report;
+  if (subReport && (subReport.not_submitted?.length > 0 || subReport.unmatched_schedules?.length > 0)) {
+    const notSub = subReport.not_submitted || [];
+    const unmatched = subReport.unmatched_schedules || [];
+    alertsDiv.innerHTML = `
+      <div class="bg-orange-50 border border-orange-200 rounded-xl px-4 py-3 flex items-start gap-3">
+        <i class="fas fa-exclamation-triangle text-orange-500 mt-0.5"></i>
+        <div class="text-sm">
+          ${notSub.length > 0 ? `
+            <span class="text-orange-700 font-medium">予定表未提出: </span>
+            <span class="text-orange-600">${notSub.map(n => n.name).join('、')}</span>
+          ` : ''}
+          ${unmatched.length > 0 ? `
+            <span class="text-red-700 font-medium ml-2">突合不能: </span>
+            <span class="text-red-600">${unmatched.map(u => u.schedule_name).join('、')}</span>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  } else {
+    alertsDiv.innerHTML = '';
+  }
+
+  // Render calendar grid
+  renderCalendarGrid(data);
+
+  // Reset day detail
+  renderDayDetailEmpty();
+}
+
+function renderCalendarGrid(data) {
+  const grid = document.getElementById('calendar-grid');
+  const year = data.year;
+  const month = data.month;
+  const daysInMonth = data.days_in_month;
+  const dailySummary = data.daily_summary || [];
+
+  // Build lookup: day -> summary
+  const dayMap = {};
+  dailySummary.forEach(d => { dayMap[d.day] = d; });
+
+  // First day of month (0=Sun, 1=Mon, ... 6=Sat)
+  // We want Mon=0 in our grid
+  const firstDate = new Date(year, month - 1, 1);
+  const firstDayOfWeek = firstDate.getDay(); // 0=Sun
+  // Convert to Mon=0: (day + 6) % 7
+  const startOffset = (firstDayOfWeek + 6) % 7;
+
+  let html = '';
+
+  // Empty cells before month starts
+  for (let i = 0; i < startOffset; i++) {
+    html += `<div class="border-b border-r border-gray-100 bg-gray-50/50 p-1"></div>`;
+  }
+
+  // Day cells
+  for (let day = 1; day <= daysInMonth; day++) {
+    const ds = dayMap[day] || { total_children: 0, weekday: '', is_weekend: false };
+    const isWeekend = ds.is_weekend;
+    const isSelected = state.selectedDay === day;
+    const hasChildren = ds.total_children > 0;
+
+    // Date display classes
+    const dateClass = isWeekend ? 'text-red-400' : 'text-gray-700';
+    const bgClass = isWeekend ? 'bg-gray-50/70' : 'bg-white';
+    const selectedClass = isSelected ? 'ring-2 ring-blue-500 bg-blue-50/30' : '';
+
+    // Badge colors based on child count
+    let countBadge = '';
+    if (hasChildren) {
+      const n = ds.total_children;
+      const badgeColor = n >= 5 ? 'bg-blue-600 text-white' :
+                         n >= 3 ? 'bg-blue-500 text-white' :
+                                  'bg-blue-100 text-blue-700';
+      countBadge = `<span class="badge ${badgeColor}">${n}名</span>`;
+    }
+
+    // Mini indicators for special categories
+    let indicators = '';
+    const indParts = [];
+    if (ds.early_morning_count > 0) indParts.push(`<span class="text-orange-500" title="早朝 ${ds.early_morning_count}名">🕒${ds.early_morning_count}</span>`);
+    if (ds.extension_count > 0) indParts.push(`<span class="text-purple-500" title="延長 ${ds.extension_count}名">🕘${ds.extension_count}</span>`);
+    if (ds.night_count > 0) indParts.push(`<span class="text-indigo-500" title="夜間 ${ds.night_count}名">🌙${ds.night_count}</span>`);
+    if (ds.sick_count > 0) indParts.push(`<span class="text-red-500" title="病児 ${ds.sick_count}名">💊${ds.sick_count}</span>`);
+    if (indParts.length > 0) {
+      indicators = `<div class="flex gap-1 mt-0.5 text-[10px]">${indParts.join('')}</div>`;
+    }
+
+    // Meal summary (compact)
+    let mealLine = '';
+    if (ds.lunch_count > 0 || ds.dinner_count > 0) {
+      const mealParts = [];
+      if (ds.lunch_count > 0) mealParts.push(`🍱${ds.lunch_count}`);
+      if (ds.dinner_count > 0) mealParts.push(`🍽${ds.dinner_count}`);
+      mealLine = `<div class="text-[10px] text-gray-400 mt-0.5">${mealParts.join(' ')}</div>`;
+    }
+
+    // Children preview (top 2 names)
+    let childPreview = '';
+    if (ds.children && ds.children.length > 0) {
+      const preview = ds.children.slice(0, 2).map(c => {
+        const surname = c.name.split(/[\s\u3000]/)[0];
+        const tStart = _shortTime(c.actual_checkin || c.planned_start);
+        const tEnd = _shortTime(c.actual_checkout || c.planned_end);
+        return `${surname} ${tStart}-${tEnd}`;
+      });
+      const more = ds.children.length > 2 ? `<span class="text-gray-400"> +${ds.children.length - 2}</span>` : '';
+      childPreview = `<div class="text-[10px] text-gray-500 leading-tight mt-0.5">${preview.join('<br>')}${more}</div>`;
+    }
+
+    html += `
+      <div class="cal-day border-b border-r border-gray-100 p-1.5 cursor-pointer ${bgClass} ${selectedClass}"
+           onclick="selectDay(${day})" id="cal-day-${day}">
+        <div class="flex items-center justify-between mb-0.5">
+          <span class="text-xs font-semibold ${dateClass}">${day}<span class="text-[10px] font-normal ml-0.5">${ds.weekday || ''}</span></span>
+          ${countBadge}
+        </div>
+        ${childPreview}
+        ${indicators}
+        ${mealLine}
+      </div>
+    `;
+  }
+
+  // Trailing empty cells to complete the grid
+  const totalCells = startOffset + daysInMonth;
+  const remainder = totalCells % 7;
+  if (remainder > 0) {
+    for (let i = 0; i < 7 - remainder; i++) {
+      html += `<div class="border-b border-r border-gray-100 bg-gray-50/50 p-1"></div>`;
+    }
+  }
+
+  grid.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════
+// DASHBOARD: DAY DETAIL
+// ═══════════════════════════════════════════
+
+function selectDay(day) {
+  if (!state.dashboardData) return;
+
+  // Update selected state
+  const prevDay = state.selectedDay;
+  state.selectedDay = day;
+
+  // Update visual selection
+  if (prevDay) {
+    const prevEl = document.getElementById(`cal-day-${prevDay}`);
+    if (prevEl) {
+      prevEl.classList.remove('ring-2', 'ring-blue-500', 'bg-blue-50/30');
+    }
+  }
+  const currEl = document.getElementById(`cal-day-${day}`);
+  if (currEl) {
+    currEl.classList.add('ring-2', 'ring-blue-500', 'bg-blue-50/30');
+  }
+
+  // Find day data
+  const ds = (state.dashboardData.daily_summary || []).find(d => d.day === day);
+  if (!ds) {
+    renderDayDetailEmpty();
+    return;
+  }
+
+  renderDayDetail(day, ds);
+}
+
+function renderDayDetailEmpty() {
+  document.getElementById('day-detail-title').textContent = '日付を選択してください';
+  document.getElementById('day-detail-content').innerHTML = `
+    <p class="text-center py-8 text-gray-400 text-sm">
+      カレンダーの日付をクリックすると<br>園児一覧が表示されます
+    </p>
+  `;
+}
+
+function renderDayDetail(day, ds) {
+  const data = state.dashboardData;
+  const weekday = ds.weekday || '';
+  const dateStr = `${data.month}月${day}日（${weekday}）`;
+
+  document.getElementById('day-detail-title').innerHTML = `
+    <div class="flex items-center justify-between">
+      <span>${dateStr}</span>
+      <span class="text-xs font-normal text-gray-500">${ds.total_children}名来園</span>
+    </div>
+  `;
+
+  const children = ds.children || [];
+  if (children.length === 0) {
+    document.getElementById('day-detail-content').innerHTML = `
+      <div class="text-center py-6 text-gray-400">
+        <i class="fas fa-moon text-2xl mb-2"></i>
+        <p class="text-sm">来園予定なし</p>
+      </div>
+    `;
+    return;
+  }
+
+  // Summary counters at top
+  let summaryHtml = `
+    <div class="grid grid-cols-3 gap-2 mb-3">
+      <div class="bg-blue-50 rounded-lg px-2 py-1.5 text-center">
+        <div class="text-lg font-bold text-blue-700">${ds.total_children}</div>
+        <div class="text-[10px] text-blue-500">来園</div>
+      </div>
+      <div class="bg-green-50 rounded-lg px-2 py-1.5 text-center">
+        <div class="text-lg font-bold text-green-700">${ds.lunch_count}</div>
+        <div class="text-[10px] text-green-500">昼食</div>
+      </div>
+      <div class="bg-purple-50 rounded-lg px-2 py-1.5 text-center">
+        <div class="text-lg font-bold text-purple-700">${ds.pm_snack_count || 0}</div>
+        <div class="text-[10px] text-purple-500">おやつ</div>
+      </div>
+    </div>
+  `;
+
+  // Special counts row
+  const specials = [];
+  if (ds.early_morning_count > 0) specials.push(`<span class="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-[10px] font-medium">🕒 早朝 ${ds.early_morning_count}名</span>`);
+  if (ds.extension_count > 0) specials.push(`<span class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-[10px] font-medium">🕘 延長 ${ds.extension_count}名</span>`);
+  if (ds.night_count > 0) specials.push(`<span class="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[10px] font-medium">🌙 夜間 ${ds.night_count}名</span>`);
+  if (ds.sick_count > 0) specials.push(`<span class="bg-red-100 text-red-700 px-2 py-0.5 rounded text-[10px] font-medium">💊 病児 ${ds.sick_count}名</span>`);
+
+  if (specials.length > 0) {
+    summaryHtml += `<div class="flex flex-wrap gap-1 mb-3">${specials.join('')}</div>`;
+  }
+
+  // Children table
+  let tableHtml = `
+    <div class="border border-gray-200 rounded-lg overflow-hidden">
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="px-2 py-1.5 text-left text-gray-600 font-semibold">園児名</th>
+            <th class="px-2 py-1.5 text-center text-gray-600 font-semibold">時間</th>
+            <th class="px-2 py-1.5 text-center text-gray-600 font-semibold">区分</th>
+          </tr>
+        </thead>
+        <tbody>
+  `;
+
+  // Sort: early morning first, then by start time
+  const sorted = [...children].sort((a, b) => {
+    const tA = a.actual_checkin || a.planned_start || '99:99';
+    const tB = b.actual_checkin || b.planned_start || '99:99';
+    return tA.localeCompare(tB);
+  });
+
+  sorted.forEach((c, idx) => {
+    const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+    const startTime = _shortTime(c.actual_checkin || c.planned_start);
+    const endTime = _shortTime(c.actual_checkout || c.planned_end);
+    const timeStr = startTime && endTime ? `${startTime}-${endTime}` : '-';
+
+    // Status badges
+    const badges = [];
+    if (c.is_early_morning) badges.push('<span class="text-orange-500" title="早朝">🕒</span>');
+    if (c.is_extension) badges.push('<span class="text-purple-500" title="延長">🕘</span>');
+    if (c.is_night) badges.push('<span class="text-indigo-500" title="夜間">🌙</span>');
+    if (c.is_sick) badges.push('<span class="text-red-500" title="病児">💊</span>');
+    if (c.has_lunch) badges.push('<span title="昼食">🍱</span>');
+
+    // Enrollment type badge
+    const enrollBadge = c.enrollment_type === '一時'
+      ? '<span class="bg-yellow-100 text-yellow-700 px-1 py-0.5 rounded text-[9px] font-medium">一時</span>'
+      : '';
+
+    tableHtml += `
+      <tr class="${rowBg} border-b border-gray-100 last:border-0">
+        <td class="px-2 py-1.5">
+          <div class="flex items-center gap-1">
+            <span class="font-medium text-gray-800">${c.name}</span>
+            ${enrollBadge}
+          </div>
+        </td>
+        <td class="px-2 py-1.5 text-center text-gray-600 font-mono">${timeStr}</td>
+        <td class="px-2 py-1.5 text-center">${badges.join('')}</td>
+      </tr>
+    `;
+  });
+
+  tableHtml += '</tbody></table></div>';
+
+  // Planned time vs actual time detail (expandable)
+  let detailHtml = '';
+  if (sorted.some(c => c.planned_start && c.actual_checkin)) {
+    detailHtml = `
+      <details class="mt-3">
+        <summary class="text-[10px] text-gray-400 cursor-pointer">予定 vs 実績の詳細</summary>
+        <div class="mt-2 space-y-1">
+          ${sorted.map(c => {
+            const planned = c.planned_start && c.planned_end
+              ? `予定 ${_shortTime(c.planned_start)}-${_shortTime(c.planned_end)}`
+              : '予定なし';
+            const actual = c.actual_checkin && c.actual_checkout
+              ? `実績 ${_shortTime(c.actual_checkin)}-${_shortTime(c.actual_checkout)}`
+              : '実績なし';
+            return `
+              <div class="bg-gray-50 rounded px-2 py-1 text-[10px]">
+                <span class="font-medium text-gray-700">${c.name}</span>
+                <span class="text-gray-400 mx-1">|</span>
+                <span class="text-blue-600">${planned}</span>
+                <span class="text-gray-400 mx-1">→</span>
+                <span class="text-green-600">${actual}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </details>
+    `;
+  }
+
+  document.getElementById('day-detail-content').innerHTML = summaryHtml + tableHtml + detailHtml;
+}
+
+// ═══════════════════════════════════════════
+// GENERATION (v3.3 retained)
+// ═══════════════════════════════════════════
+
 async function startGeneration() {
   if (state.generating) return;
 
@@ -118,11 +575,17 @@ async function startGeneration() {
     return;
   }
 
+  // Switch to generate tab
+  switchTab('generate');
+
   state.generating = true;
   const btn = document.getElementById('btn-generate');
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>生成中...';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>生成中...';
+  }
 
+  document.getElementById('generate-empty').classList.add('hidden');
   showProgress();
   clearProgressLog();
   updateProgress(5, 'ファイルを準備中...');
@@ -147,7 +610,6 @@ async function startGeneration() {
     updateProgress(10, `ルクミーデータ送信中...`);
     updateProgress(15, `${state.files.schedule.length}件の予定表を処理中...`);
 
-    // Send to Hono proxy → Python Generator
     const response = await fetch('/api/jobs/generate', {
       method: 'POST',
       body: formData,
@@ -155,10 +617,9 @@ async function startGeneration() {
 
     updateProgress(70, 'レスポンスを受信中...');
 
-    // Handle fatal corruption (422)
     if (response.status === 422) {
       const errorData = await response.json();
-      updateProgress(0, '⛔ テンプレート破損検出 — 処理中止');
+      updateProgress(0, 'テンプレート破損検出 — 処理中止');
       showFatalResult(errorData);
       return;
     }
@@ -179,7 +640,6 @@ async function startGeneration() {
 
     const blob = await response.blob();
 
-    // ★ Extract full _meta.json from ZIP (JSZip)
     let meta = null;
     try {
       const zip = await JSZip.loadAsync(blob);
@@ -189,8 +649,7 @@ async function startGeneration() {
         meta = JSON.parse(metaText);
       }
     } catch (e) {
-      console.warn('Failed to extract _meta.json from ZIP:', e);
-      // Fallback: try header
+      console.warn('Failed to extract _meta.json:', e);
       try {
         const metaStr = response.headers.get('X-Meta-Json');
         if (metaStr) meta = JSON.parse(metaStr);
@@ -206,8 +665,7 @@ async function startGeneration() {
     state.lastBlob = blob;
     state.lastFilename = `あゆっこ_${year}年${String(month).padStart(2, '0')}月.zip`;
 
-    updateProgress(100, `✅ 生成完了！ ${childrenCount}名処理, ${formatFileSize(blob.size)}`);
-
+    updateProgress(100, `生成完了! ${childrenCount}名処理, ${formatFileSize(blob.size)}`);
     showSuccessResult(blob, year, month, warningsCount, childrenCount, meta, warnings);
 
   } catch (error) {
@@ -215,8 +673,10 @@ async function startGeneration() {
     showErrorResult({ error: error.message, suggestion: 'ネットワーク接続を確認してください' });
   } finally {
     state.generating = false;
-    btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-magic mr-1"></i>生成開始';
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-magic mr-1"></i>提出物生成';
+    }
   }
 }
 
@@ -239,7 +699,9 @@ function updateProgress(pct, text) {
   log.scrollTop = log.scrollHeight;
 }
 
-// ===== Results Display =====
+// ═══════════════════════════════════════════
+// RESULTS DISPLAY (v3.3 retained)
+// ═══════════════════════════════════════════
 
 function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta, warnings) {
   const resultDiv = document.getElementById('step-result');
@@ -248,23 +710,15 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
 
   const subReport = meta?.submission_report;
   const stats = meta?.stats || {};
-  // warnings is already passed as parameter from _meta.json extraction
 
-  // Show download button
-  const dlBtn = document.getElementById('btn-download-zip');
-  dlBtn.style.display = '';
+  document.getElementById('btn-download-zip').style.display = '';
 
-  // ── Submission status panel (B-4) — show FIRST (needs-attention at top) ──
-  if (subReport && (subReport.not_submitted?.length > 0 || subReport.unmatched_schedules?.length > 0)) {
-    document.getElementById('result-submission').innerHTML = _renderSubmissionPanel(subReport);
-  } else if (subReport) {
-    // All submitted — collapsed
+  if (subReport) {
     document.getElementById('result-submission').innerHTML = _renderSubmissionPanel(subReport);
   } else {
     document.getElementById('result-submission').innerHTML = '';
   }
 
-  // ── Output cards (3 categories) ──
   const hasDailyTemplate = state.files.daily_template.length > 0;
   const hasBillingTemplate = state.files.billing_template.length > 0;
   const pdfCount = meta?.pdf_count || childrenCount;
@@ -272,7 +726,7 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
   document.getElementById('result-files').innerHTML = `
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
       ${_renderOutputCard('university', '01_園内管理', 'fas fa-school', 'green',
-        '園児登園確認表・児童実績表・◆保育時間',
+        '園児登園確認表・児童実績表・保育時間',
         hasDailyTemplate ? '日報Excel内シート書き込み済' : 'テンプレ未指定（スキップ）',
         hasDailyTemplate)}
       ${_renderOutputCard('accounting', '02_経理提出', 'fas fa-file-invoice-dollar', 'purple',
@@ -280,8 +734,8 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
         hasBillingTemplate ? '明細Excel数量列更新済' : 'テンプレ未指定（スキップ）',
         hasBillingTemplate)}
       ${_renderOutputCard('parents', '03_保護者配布', 'fas fa-file-pdf', 'blue',
-        `利用明細書PDF（${pdfCount}名分）`,
-        `${pdfCount}名分のPDFを自動生成`, true)}
+        '利用明細書PDF（' + pdfCount + '名分）',
+        pdfCount + '名分のPDFを自動生成', true)}
     </div>
     <div class="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
       <div class="text-sm text-gray-700">
@@ -295,9 +749,6 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
     </div>
   `;
 
-  // (submission panel already rendered above — at the top)
-
-  // ── Stats ──
   document.getElementById('result-stats').innerHTML = `
     <div class="flex flex-wrap gap-3 text-sm mt-3">
       <span class="bg-blue-50 text-blue-800 px-3 py-1.5 rounded-full font-medium">
@@ -320,7 +771,6 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
     </div>
   `;
 
-  // ── Warnings panel (expanded with details) ──
   if (warnings.length > 0) {
     document.getElementById('result-warnings').innerHTML = _renderWarningsPanel(warnings);
   } else {
@@ -375,7 +825,6 @@ function _renderSubmissionPanel(report) {
       <div class="p-4">
   `;
 
-  // Not-submitted (needs attention — always show first)
   if (not_submitted.length > 0) {
     html += `
       <div class="mb-4">
@@ -394,7 +843,6 @@ function _renderSubmissionPanel(report) {
     `;
   }
 
-  // Unmatched schedule files
   if (unmatched_schedules.length > 0) {
     html += `
       <div class="mb-4">
@@ -413,7 +861,6 @@ function _renderSubmissionPanel(report) {
     `;
   }
 
-  // Submitted (collapsed by default)
   if (submitted.length > 0) {
     html += `
       <details>
@@ -439,11 +886,8 @@ function _renderWarningsPanel(warnings) {
   const warns = warnings.filter(w => w.level === 'warn');
   const infos = warnings.filter(w => w.level === 'info');
 
-  let html = `
-    <div class="mt-4 space-y-3">
-  `;
+  let html = '<div class="mt-4 space-y-3">';
 
-  // Errors (always expanded)
   if (errors.length > 0) {
     html += `
       <div class="bg-red-50 rounded-xl border border-red-200 overflow-hidden">
@@ -457,14 +901,13 @@ function _renderWarningsPanel(warnings) {
     `;
   }
 
-  // Warnings (expanded if few, collapsed if many)
   if (warns.length > 0) {
     const isOpen = warns.length <= 5 ? 'open' : '';
     html += `
       <details ${isOpen} class="bg-yellow-50 rounded-xl border border-yellow-200 overflow-hidden">
         <summary class="px-4 py-2.5 bg-yellow-100 text-yellow-800 text-sm font-semibold cursor-pointer flex items-center gap-1">
           <i class="fas fa-exclamation-triangle"></i>警告 (${warns.length}件)
-          ${warns.length > 5 ? `<span class="text-yellow-600 font-normal text-xs ml-2">クリックで展開</span>` : ''}
+          ${warns.length > 5 ? '<span class="text-yellow-600 font-normal text-xs ml-2">クリックで展開</span>' : ''}
         </summary>
         <div class="p-4 space-y-2 max-h-60 overflow-y-auto">
           ${warns.map(w => _renderWarningItem(w, 'yellow')).join('')}
@@ -473,7 +916,6 @@ function _renderWarningsPanel(warnings) {
     `;
   }
 
-  // Info (always collapsed)
   if (infos.length > 0) {
     html += `
       <details class="bg-blue-50 rounded-xl border border-blue-200 overflow-hidden">
@@ -508,7 +950,6 @@ function showFatalResult(errorData) {
   const resultDiv = document.getElementById('step-result');
   resultDiv.classList.remove('hidden');
 
-  // Hide download button
   document.getElementById('btn-download-zip').style.display = 'none';
 
   document.getElementById('result-files').innerHTML = `
@@ -534,14 +975,12 @@ function showFatalResult(errorData) {
     </div>
   `;
 
-  // Show submission report even on fatal error
   if (errorData.submission_report) {
     document.getElementById('result-submission').innerHTML = _renderSubmissionPanel(errorData.submission_report);
   } else {
     document.getElementById('result-submission').innerHTML = '';
   }
 
-  // Show warnings if present
   if (errorData.warnings && errorData.warnings.length > 0) {
     document.getElementById('result-warnings').innerHTML = _renderWarningsPanel(errorData.warnings);
   } else {
@@ -603,13 +1042,19 @@ function downloadZip() {
   URL.revokeObjectURL(url);
 }
 
-// ===== Reset =====
+// ═══════════════════════════════════════════
+// RESET
+// ═══════════════════════════════════════════
+
 function resetAll() {
   state.files = { lukumi: [], schedule: [], daily_template: [], billing_template: [] };
   state.generating = false;
   state.lastMeta = null;
   state.lastBlob = null;
   state.lastFilename = null;
+  state.dashboardData = null;
+  state.dashboardLoading = false;
+  state.selectedDay = null;
 
   ['lukumi', 'schedule', 'daily_template', 'billing_template'].forEach(type => {
     renderFileList(type);
@@ -618,18 +1063,42 @@ function resetAll() {
   });
 
   updateSummary();
+
+  // Reset dashboard
+  document.getElementById('dashboard-empty').classList.remove('hidden');
+  document.getElementById('dashboard-content').classList.add('hidden');
+
+  // Reset generation
   document.getElementById('step-progress').classList.add('hidden');
   document.getElementById('step-result').classList.add('hidden');
+  document.getElementById('generate-empty').classList.remove('hidden');
+
+  switchTab('dashboard');
 }
 
-// ===== Helpers =====
+// ═══════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════
+
 function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-// ===== Init =====
+/** Format time string "HH:MM" -> "H:MM" (remove leading zero) */
+function _shortTime(timeStr) {
+  if (!timeStr) return '';
+  // Handle "HH:MM" format
+  const m = String(timeStr).match(/^0?(\d{1,2}):(\d{2})/);
+  if (m) return `${parseInt(m[1])}:${m[2]}`;
+  return timeStr;
+}
+
+// ═══════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════
+
 document.addEventListener('DOMContentLoaded', () => {
   // Health check
   fetch('/api/health').then(r => r.json()).then(data => {
@@ -648,4 +1117,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const monthSel = document.getElementById('month-select');
   if (yearSel) yearSel.value = String(now.getFullYear());
   if (monthSel) monthSel.value = String(now.getMonth() + 1);
+
+  // Start on dashboard tab
+  switchTab('dashboard');
 });

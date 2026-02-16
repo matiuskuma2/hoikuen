@@ -44,6 +44,33 @@ jobRoutes.get('/:id', async (c) => {
   return c.json(job);
 });
 
+// Dashboard endpoint (proxy to Python Generator)
+jobRoutes.post('/dashboard', async (c) => {
+  try {
+    const formData = await c.req.formData();
+    const pyFormData = new FormData();
+
+    for (const [key, value] of formData.entries()) {
+      if (value instanceof File) {
+        pyFormData.append(key, value);
+      } else {
+        pyFormData.append(key, value);
+      }
+    }
+
+    const response = await fetch(`${GENERATOR_URL}/dashboard`, {
+      method: 'POST',
+      body: pyFormData,
+    });
+
+    const data = await response.json();
+    return c.json(data, response.status);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return c.json({ error: `Dashboard接続エラー: ${message}` }, 502);
+  }
+});
+
 // Proxy generate request to Python Generator
 jobRoutes.post('/generate', async (c) => {
   try {
