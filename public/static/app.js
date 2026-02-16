@@ -1,15 +1,16 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v4.1
+ * あゆっこ業務自動化 — Frontend Application v4.2
  * 
  * Architecture: UI → Hono proxy → Python Generator
  * 
- * v4.1: Dashboard UX polish for Kimura
- *   - Guide card: 「このシステムでできること」+ ZIP output explanation
- *   - Today summary banner (people/meals/early/ext/night)
- *   - Calendar meal badges: 🍱4 🍪3 🍽1 on each day cell
- *   - Day detail table: columns = 園児名 | 時間 | 🍱 | 🍪 | 🍽 | 区分
- *   - Day detail sorted by start time
+ * v4.2: Dashboard強化
+ *   - 今日/明日/今週/月間 サブタブ (switchDashView)
+ *   - 提出物作成タブ: ZIP内容の固定説明カード (always visible)
+ *   - データ入力: Excel/PDF・写真分割 + AI読み取りボタン
+ *   - 1ページマニュアル (modal)
+ *   - Scoped view: renderScopedDays for today/tomorrow/week
  * 
+ * v4.1 (retained): Guide card, today summary banner, meal badges, day detail table
  * v4.0 (retained): Tab nav, calendar grid, day-click detail, generation
  * v3.3 (retained): _meta.json, 3-category output, warnings, submission
  */
@@ -24,6 +25,7 @@ const state = {
     schedule: [],
     daily_template: [],
     billing_template: [],
+    photo: [],
   },
   generating: false,
   lastMeta: null,
@@ -34,10 +36,11 @@ const state = {
   dashboardLoading: false,
   selectedDay: null,
   activeTab: 'dashboard',
+  dashView: 'today', // 'today' | 'tomorrow' | 'week' | 'month'
 };
 
 // ═══════════════════════════════════════════
-// TAB NAVIGATION
+// TAB NAVIGATION (top-level)
 // ═══════════════════════════════════════════
 
 function switchTab(tab) {
@@ -63,6 +66,183 @@ function switchTab(tab) {
       document.getElementById('generate-empty').classList.remove('hidden');
     }
   }
+}
+
+// ═══════════════════════════════════════════
+// DASHBOARD SUB-TABS: 今日/明日/今週/月間
+// ═══════════════════════════════════════════
+
+function switchDashView(view) {
+  state.dashView = view;
+
+  // Update button styles
+  document.querySelectorAll('.dash-view-btn').forEach(btn => {
+    btn.classList.remove('bg-blue-600', 'text-white');
+    btn.classList.add('bg-gray-100', 'text-gray-600', 'hover:bg-gray-200');
+  });
+  const activeBtn = document.getElementById(`dv-${view}`);
+  if (activeBtn) {
+    activeBtn.classList.remove('bg-gray-100', 'text-gray-600', 'hover:bg-gray-200');
+    activeBtn.classList.add('bg-blue-600', 'text-white');
+  }
+
+  if (!state.dashboardData) return;
+
+  const scopedDiv = document.getElementById('dashboard-scoped-view');
+  const monthSection = document.getElementById('dashboard-month-section');
+
+  if (view === 'month') {
+    // Show full calendar, hide scoped view
+    if (scopedDiv) scopedDiv.classList.add('hidden');
+    if (monthSection) monthSection.classList.remove('hidden');
+    return;
+  }
+
+  // Hide month calendar, show scoped view
+  if (monthSection) monthSection.classList.add('hidden');
+  if (scopedDiv) scopedDiv.classList.remove('hidden');
+
+  const now = new Date();
+  const data = state.dashboardData;
+  const ds = data.daily_summary || [];
+
+  let targetDays = [];
+
+  if (view === 'today') {
+    if (data.year === now.getFullYear() && data.month === now.getMonth() + 1) {
+      targetDays = [now.getDate()];
+    }
+  } else if (view === 'tomorrow') {
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (data.year === tomorrow.getFullYear() && data.month === tomorrow.getMonth() + 1) {
+      targetDays = [tomorrow.getDate()];
+    }
+  } else if (view === 'week') {
+    // Get this week's dates (Mon-Sun) that fall in this month
+    const dayOfWeek = now.getDay(); // 0=Sun
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(now);
+      d.setDate(now.getDate() + mondayOffset + i);
+      if (d.getFullYear() === data.year && d.getMonth() + 1 === data.month) {
+        targetDays.push(d.getDate());
+      }
+    }
+  }
+
+  renderScopedDays(data, targetDays, view);
+}
+
+function renderScopedDays(data, targetDays, view) {
+  const container = document.getElementById('dashboard-scoped-view');
+  if (!container) return;
+
+  const viewLabels = { today: '今日', tomorrow: '明日', week: '今週' };
+  const label = viewLabels[view] || view;
+
+  if (targetDays.length === 0) {
+    container.innerHTML = `
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+        <i class="fas fa-calendar-times text-3xl text-gray-300 mb-3"></i>
+        <p class="text-sm text-gray-500">${label}のデータは表示中の月にありません</p>
+        <p class="text-xs text-gray-400 mt-1">月間ビューに切り替えて確認してください</p>
+      </div>
+    `;
+    return;
+  }
+
+  const ds = data.daily_summary || [];
+  let html = '';
+
+  targetDays.forEach(day => {
+    const dayData = ds.find(d => d.day === day);
+    if (!dayData) {
+      html += `
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-3">
+          <h3 class="text-sm font-bold text-gray-700">${data.month}月${day}日</h3>
+          <p class="text-sm text-gray-400 mt-2 text-center py-4"><i class="fas fa-moon mr-1"></i>来園予定なし</p>
+        </div>
+      `;
+      return;
+    }
+
+    const children = dayData.children || [];
+    const sorted = [...children].sort((a, b) => {
+      const tA = a.actual_checkin || a.planned_start || '99:99';
+      const tB = b.actual_checkin || b.planned_start || '99:99';
+      return tA.localeCompare(tB);
+    });
+
+    // Summary badges
+    const badges = [];
+    badges.push(`<span class="bg-blue-100 text-blue-800 px-2.5 py-1 rounded-full text-xs font-bold"><i class="fas fa-child mr-1"></i>${dayData.total_children}名</span>`);
+    if (dayData.lunch_count > 0) badges.push(`<span class="bg-green-100 text-green-700 px-2 py-1 rounded-full text-xs font-medium">🍱昼食${dayData.lunch_count}</span>`);
+    if (dayData.am_snack_count > 0) badges.push(`<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium">🍪AM${dayData.am_snack_count}</span>`);
+    if (dayData.pm_snack_count > 0) badges.push(`<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium">🍪PM${dayData.pm_snack_count}</span>`);
+    if (dayData.dinner_count > 0) badges.push(`<span class="bg-orange-100 text-orange-700 px-2 py-1 rounded-full text-xs font-medium">🍽夕食${dayData.dinner_count}</span>`);
+    if (dayData.early_morning_count > 0) badges.push(`<span class="bg-orange-100 text-orange-800 px-2 py-1 rounded-full text-xs font-medium">🕒早朝${dayData.early_morning_count}</span>`);
+    if (dayData.extension_count > 0) badges.push(`<span class="bg-purple-100 text-purple-800 px-2 py-1 rounded-full text-xs font-medium">🕘延長${dayData.extension_count}</span>`);
+    if (dayData.night_count > 0) badges.push(`<span class="bg-indigo-100 text-indigo-800 px-2 py-1 rounded-full text-xs font-medium">🌙夜間${dayData.night_count}</span>`);
+    if (dayData.sick_count > 0) badges.push(`<span class="bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-medium">💊病児${dayData.sick_count}</span>`);
+
+    // Table
+    let tableRows = sorted.map((c, idx) => {
+      const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70';
+      const startTime = _shortTime(c.actual_checkin || c.planned_start);
+      const endTime = _shortTime(c.actual_checkout || c.planned_end);
+      const timeStr = startTime && endTime ? `${startTime}-${endTime}` : '-';
+      const lunchMark = c.has_lunch ? '<span class="text-green-600 font-bold">○</span>' : '';
+      const snackMark = (c.has_am_snack || c.has_pm_snack) ? '<span class="text-amber-600 font-bold">○</span>' : '';
+      const dinnerMark = c.has_dinner ? '<span class="text-orange-600 font-bold">○</span>' : '';
+      const specials = [];
+      if (c.is_early_morning) specials.push('<span class="text-orange-500" title="早朝">🕒</span>');
+      if (c.is_extension) specials.push('<span class="text-purple-500" title="延長">🕘</span>');
+      if (c.is_night) specials.push('<span class="text-indigo-500" title="夜間">🌙</span>');
+      if (c.is_sick) specials.push('<span class="text-red-500" title="病児">💊</span>');
+      const enrollBadge = c.enrollment_type === '一時'
+        ? '<span class="bg-yellow-100 text-yellow-700 px-1 py-0.5 rounded text-[9px] font-medium ml-1">一時</span>'
+        : '';
+      return `
+        <tr class="${rowBg} border-b border-gray-100 last:border-0">
+          <td class="px-3 py-2"><span class="font-medium text-gray-800">${c.name}</span>${enrollBadge}</td>
+          <td class="px-3 py-2 text-center text-gray-600 font-mono whitespace-nowrap">${timeStr}</td>
+          <td class="px-2 py-2 text-center">${lunchMark}</td>
+          <td class="px-2 py-2 text-center">${snackMark}</td>
+          <td class="px-2 py-2 text-center">${dinnerMark}</td>
+          <td class="px-2 py-2 text-center">${specials.join('')}</td>
+        </tr>
+      `;
+    }).join('');
+
+    html += `
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-3 overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
+          <h3 class="text-sm font-bold text-gray-800">
+            ${data.month}月${day}日（${dayData.weekday}）
+          </h3>
+          <div class="flex flex-wrap gap-1.5">${badges.join('')}</div>
+        </div>
+        ${sorted.length > 0 ? `
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="bg-gray-50 border-b border-gray-200">
+              <th class="px-3 py-2 text-left text-gray-600 font-semibold">園児名</th>
+              <th class="px-3 py-2 text-center text-gray-600 font-semibold">時間</th>
+              <th class="px-2 py-2 text-center text-gray-400" title="昼食">🍱</th>
+              <th class="px-2 py-2 text-center text-gray-400" title="おやつ">🍪</th>
+              <th class="px-2 py-2 text-center text-gray-400" title="夕食">🍽</th>
+              <th class="px-2 py-2 text-center text-gray-600 font-semibold">区分</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+        ` : `<div class="p-4 text-center text-gray-400 text-sm"><i class="fas fa-moon mr-1"></i>来園予定なし</div>`}
+      </div>
+    `;
+  });
+
+  container.innerHTML = html;
 }
 
 // ═══════════════════════════════════════════
@@ -96,12 +276,14 @@ function addFiles(files, type) {
   }
   renderFileList(type);
   updateSummary();
+  updateAiReadBtn();
 }
 
 function removeFile(type, index) {
   state.files[type].splice(index, 1);
   renderFileList(type);
   updateSummary();
+  updateAiReadBtn();
 }
 
 function renderFileList(type) {
@@ -109,10 +291,18 @@ function renderFileList(type) {
   if (!container) return;
   const files = state.files[type];
   if (files.length === 0) { container.innerHTML = ''; return; }
+  const iconMap = {
+    lukumi: 'fa-file-excel text-green-500',
+    schedule: 'fa-file-excel text-blue-500',
+    daily_template: 'fa-file-alt text-emerald-500',
+    billing_template: 'fa-file-invoice-dollar text-purple-500',
+    photo: 'fa-image text-purple-500',
+  };
+  const icon = iconMap[type] || 'fa-file text-gray-400';
   container.innerHTML = files.map((f, i) => `
     <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
       <div class="flex items-center gap-2 min-w-0">
-        <i class="fas fa-file-excel text-green-500 text-xs flex-shrink-0"></i>
+        <i class="fas ${icon} text-xs flex-shrink-0"></i>
         <span class="text-xs text-gray-700 truncate">${f.name}</span>
         <span class="text-xs text-gray-400">(${formatFileSize(f.size)})</span>
       </div>
@@ -128,14 +318,16 @@ function updateSummary() {
   const text = document.getElementById('summary-text');
   const hasLukumi = state.files.lukumi.length > 0;
   const scheduleCount = state.files.schedule.length;
+  const photoCount = state.files.photo.length;
   const hasDaily = state.files.daily_template.length > 0;
   const hasBilling = state.files.billing_template.length > 0;
 
-  if (hasLukumi || scheduleCount > 0) {
+  if (hasLukumi || scheduleCount > 0 || photoCount > 0) {
     summary.classList.remove('hidden');
     const parts = [];
     if (hasLukumi) parts.push('ルクミー: 1件');
-    if (scheduleCount > 0) parts.push(`予定表: ${scheduleCount}件`);
+    if (scheduleCount > 0) parts.push(`予定表Excel: ${scheduleCount}件`);
+    if (photoCount > 0) parts.push(`写真/PDF: ${photoCount}件`);
     if (hasDaily) parts.push('日報テンプレ: ✓');
     if (hasBilling) parts.push('明細テンプレ: ✓');
     text.textContent = parts.join(' / ');
@@ -147,6 +339,69 @@ function updateSummary() {
   } else {
     summary.classList.add('hidden');
   }
+}
+
+// ═══════════════════════════════════════════
+// AI READ (PDF/Photo) — Placeholder
+// ═══════════════════════════════════════════
+
+function updateAiReadBtn() {
+  const btn = document.getElementById('btn-ai-read');
+  if (btn) {
+    btn.disabled = state.files.photo.length === 0;
+  }
+}
+
+function startAiRead() {
+  if (state.files.photo.length === 0) return;
+
+  // Show preview panel with placeholder
+  const previewDiv = document.getElementById('ai-read-preview');
+  const resultDiv = document.getElementById('ai-read-result');
+
+  previewDiv.classList.remove('hidden');
+
+  const fileNames = state.files.photo.map(f => f.name).join('、');
+  resultDiv.innerHTML = `
+    <div class="text-center py-6">
+      <i class="fas fa-robot text-purple-400 text-3xl mb-3"></i>
+      <p class="text-sm text-purple-700 font-medium mb-2">AI読み取り機能（準備中）</p>
+      <p class="text-xs text-gray-500 mb-3">
+        対象ファイル: ${fileNames}
+      </p>
+      <div class="bg-yellow-50 rounded-lg p-3 border border-yellow-200 text-xs text-yellow-700 max-w-md mx-auto">
+        <i class="fas fa-info-circle mr-1"></i>
+        この機能は近日実装予定です。<br>
+        写真・PDFの予定表をAIが読み取り、Excel形式に自動変換します。<br>
+        現在はExcelファイルでの入力をお使いください。
+      </div>
+    </div>
+  `;
+}
+
+function cancelAiRead() {
+  const previewDiv = document.getElementById('ai-read-preview');
+  if (previewDiv) previewDiv.classList.add('hidden');
+}
+
+function confirmAiRead() {
+  // Placeholder: In the future, this would convert AI-read data into schedule files
+  alert('AI読み取り結果の確定機能は近日実装予定です。\n現在はExcel予定表をご利用ください。');
+  cancelAiRead();
+}
+
+// ═══════════════════════════════════════════
+// MANUAL MODAL
+// ═══════════════════════════════════════════
+
+function showManual() {
+  const modal = document.getElementById('manual-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeManual() {
+  const modal = document.getElementById('manual-modal');
+  if (modal) modal.classList.add('hidden');
 }
 
 // ═══════════════════════════════════════════
@@ -225,8 +480,6 @@ function renderDashboard(data) {
   const totalEarly = ds.reduce((s, d) => s + d.early_morning_count, 0);
   const totalExt = ds.reduce((s, d) => s + d.extension_count, 0);
   const totalNight = ds.reduce((s, d) => s + d.night_count, 0);
-  const totalLunch = ds.reduce((s, d) => s + d.lunch_count, 0);
-  const totalDinner = ds.reduce((s, d) => s + d.dinner_count, 0);
 
   document.getElementById('dashboard-month-stats').innerHTML = `
     <span class="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-medium">
@@ -270,6 +523,9 @@ function renderDashboard(data) {
 
   // Render calendar grid
   renderCalendarGrid(data);
+
+  // ── Apply current dash view ──
+  switchDashView(state.dashView);
 
   // Auto-select today if viewing current month
   const now = new Date();
@@ -315,7 +571,7 @@ function renderTodaySummary(data) {
   if (ds.sick_count > 0) badges.push(`<span class="bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-medium">💊病児${ds.sick_count}</span>`);
 
   todayDiv.innerHTML = `
-    <div class="bg-white rounded-xl shadow-sm border border-blue-200 px-5 py-3 cursor-pointer hover:bg-blue-50/50 transition-colors" onclick="selectDay(${today})">
+    <div class="bg-white rounded-xl shadow-sm border border-blue-200 px-5 py-3 cursor-pointer hover:bg-blue-50/50 transition-colors" onclick="switchDashView('today')">
       <div class="flex items-center gap-3 flex-wrap">
         <span class="text-sm font-bold text-gray-800"><i class="fas fa-sun text-yellow-400 mr-1"></i>今日 (${data.month}/${today} ${ds.weekday})</span>
         <div class="flex flex-wrap gap-1.5">
@@ -342,7 +598,6 @@ function renderCalendarGrid(data) {
   // We want Mon=0 in our grid
   const firstDate = new Date(year, month - 1, 1);
   const firstDayOfWeek = firstDate.getDay(); // 0=Sun
-  // Convert to Mon=0: (day + 6) % 7
   const startOffset = (firstDayOfWeek + 6) % 7;
 
   let html = '';
@@ -359,12 +614,10 @@ function renderCalendarGrid(data) {
     const isSelected = state.selectedDay === day;
     const hasChildren = ds.total_children > 0;
 
-    // Date display classes
     const dateClass = isWeekend ? 'text-red-400' : 'text-gray-700';
     const bgClass = isWeekend ? 'bg-gray-50/70' : 'bg-white';
     const selectedClass = isSelected ? 'ring-2 ring-blue-500 bg-blue-50/30' : '';
 
-    // Badge colors based on child count
     let countBadge = '';
     if (hasChildren) {
       const n = ds.total_children;
@@ -374,7 +627,7 @@ function renderCalendarGrid(data) {
       countBadge = `<span class="badge ${badgeColor}">${n}名</span>`;
     }
 
-    // ── Meal badges: 🍱4 🍪3 🍽1 (compact 1-line) ──
+    // Meal badges
     let mealLine = '';
     const mealParts = [];
     if (ds.lunch_count > 0) mealParts.push(`<span title="昼食 ${ds.lunch_count}名">🍱${ds.lunch_count}</span>`);
@@ -385,7 +638,7 @@ function renderCalendarGrid(data) {
       mealLine = `<div class="flex gap-1.5 mt-0.5 text-[10px] text-gray-500">${mealParts.join('')}</div>`;
     }
 
-    // ── Special indicators: 🕒 🕘 🌙 💊 ──
+    // Special indicators
     let indicators = '';
     const indParts = [];
     if (ds.early_morning_count > 0) indParts.push(`<span class="text-orange-500" title="早朝 ${ds.early_morning_count}名">🕒${ds.early_morning_count}</span>`);
@@ -396,7 +649,7 @@ function renderCalendarGrid(data) {
       indicators = `<div class="flex gap-1 mt-0.5 text-[10px]">${indParts.join('')}</div>`;
     }
 
-    // Children preview (top 2 names)
+    // Children preview
     let childPreview = '';
     if (ds.children && ds.children.length > 0) {
       const preview = ds.children.slice(0, 2).map(c => {
@@ -423,7 +676,7 @@ function renderCalendarGrid(data) {
     `;
   }
 
-  // Trailing empty cells to complete the grid
+  // Trailing empty cells
   const totalCells = startOffset + daysInMonth;
   const remainder = totalCells % 7;
   if (remainder > 0) {
@@ -442,23 +695,16 @@ function renderCalendarGrid(data) {
 function selectDay(day) {
   if (!state.dashboardData) return;
 
-  // Update selected state
   const prevDay = state.selectedDay;
   state.selectedDay = day;
 
-  // Update visual selection
   if (prevDay) {
     const prevEl = document.getElementById(`cal-day-${prevDay}`);
-    if (prevEl) {
-      prevEl.classList.remove('ring-2', 'ring-blue-500', 'bg-blue-50/30');
-    }
+    if (prevEl) prevEl.classList.remove('ring-2', 'ring-blue-500', 'bg-blue-50/30');
   }
   const currEl = document.getElementById(`cal-day-${day}`);
-  if (currEl) {
-    currEl.classList.add('ring-2', 'ring-blue-500', 'bg-blue-50/30');
-  }
+  if (currEl) currEl.classList.add('ring-2', 'ring-blue-500', 'bg-blue-50/30');
 
-  // Find day data
   const ds = (state.dashboardData.daily_summary || []).find(d => d.day === day);
   if (!ds) {
     renderDayDetailEmpty();
@@ -500,7 +746,7 @@ function renderDayDetail(day, ds) {
     return;
   }
 
-  // ── Summary counters: 人数 → 食 → 特記 ──
+  // Summary counters
   let summaryHtml = `
     <div class="grid grid-cols-5 gap-1.5 mb-3">
       <div class="bg-blue-50 rounded-lg px-1.5 py-1.5 text-center">
@@ -537,9 +783,7 @@ function renderDayDetail(day, ds) {
     summaryHtml += `<div class="flex flex-wrap gap-1 mb-3">${specials.join('')}</div>`;
   }
 
-  // ── Children table ──
-  // Columns: 園児名 | 時間 | 🍱 | 🍪 | 🍽 | 区分
-  // Sort by start time (earliest first)
+  // Children table
   const sorted = [...children].sort((a, b) => {
     const tA = a.actual_checkin || a.planned_start || '99:99';
     const tB = b.actual_checkin || b.planned_start || '99:99';
@@ -568,19 +812,16 @@ function renderDayDetail(day, ds) {
     const endTime = _shortTime(c.actual_checkout || c.planned_end);
     const timeStr = startTime && endTime ? `${startTime}-${endTime}` : '-';
 
-    // Meal marks: ○ = yes, blank = no
     const lunchMark = c.has_lunch ? '<span class="text-green-600 font-bold">○</span>' : '';
     const snackMark = (c.has_am_snack || c.has_pm_snack) ? '<span class="text-amber-600 font-bold">○</span>' : '';
     const dinnerMark = c.has_dinner ? '<span class="text-orange-600 font-bold">○</span>' : '';
 
-    // Special badges (early/ext/night/sick)
     const badges = [];
     if (c.is_early_morning) badges.push('<span class="text-orange-500" title="早朝">🕒</span>');
     if (c.is_extension) badges.push('<span class="text-purple-500" title="延長">🕘</span>');
     if (c.is_night) badges.push('<span class="text-indigo-500" title="夜間">🌙</span>');
     if (c.is_sick) badges.push('<span class="text-red-500" title="病児">💊</span>');
 
-    // Enrollment type badge
     const enrollBadge = c.enrollment_type === '一時'
       ? '<span class="bg-yellow-100 text-yellow-700 px-1 py-0.5 rounded text-[9px] font-medium ml-1">一時</span>'
       : '';
@@ -603,7 +844,7 @@ function renderDayDetail(day, ds) {
 
   tableHtml += '</tbody></table></div>';
 
-  // Planned time vs actual time detail (expandable)
+  // Planned vs actual detail
   let detailHtml = '';
   if (sorted.some(c => c.planned_start && c.actual_checkin)) {
     detailHtml = `
@@ -1122,7 +1363,7 @@ function downloadZip() {
 // ═══════════════════════════════════════════
 
 function resetAll() {
-  state.files = { lukumi: [], schedule: [], daily_template: [], billing_template: [] };
+  state.files = { lukumi: [], schedule: [], daily_template: [], billing_template: [], photo: [] };
   state.generating = false;
   state.lastMeta = null;
   state.lastBlob = null;
@@ -1130,14 +1371,16 @@ function resetAll() {
   state.dashboardData = null;
   state.dashboardLoading = false;
   state.selectedDay = null;
+  state.dashView = 'today';
 
-  ['lukumi', 'schedule', 'daily_template', 'billing_template'].forEach(type => {
+  ['lukumi', 'schedule', 'daily_template', 'billing_template', 'photo'].forEach(type => {
     renderFileList(type);
     const input = document.getElementById(`input-${type}`);
     if (input) input.value = '';
   });
 
   updateSummary();
+  updateAiReadBtn();
 
   // Reset dashboard
   const dashEmpty = document.getElementById('dashboard-empty');
@@ -1146,6 +1389,9 @@ function resetAll() {
   if (dashContent) dashContent.classList.add('hidden');
   const todayDiv = document.getElementById('dashboard-today');
   if (todayDiv) todayDiv.innerHTML = '';
+
+  // Reset AI read preview
+  cancelAiRead();
 
   // Reset generation
   document.getElementById('step-progress').classList.add('hidden');
@@ -1168,7 +1414,6 @@ function formatFileSize(bytes) {
 /** Format time string "HH:MM" -> "H:MM" (remove leading zero) */
 function _shortTime(timeStr) {
   if (!timeStr) return '';
-  // Handle "HH:MM" format
   const m = String(timeStr).match(/^0?(\d{1,2}):(\d{2})/);
   if (m) return `${parseInt(m[1])}:${m[2]}`;
   return timeStr;
