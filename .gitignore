@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Build output
+dist/
+
+# Compiled binary addons
+build
+
+# Environment variables
+.env
+.dev.vars
+
+# Wrangler local state
+.wrangler/
+
+# PM2
+.pm2/
+pids/
+logs/
+*.log
+
+# Backup files
+*.backup
+*.bak
+*.tar.gz
+*.zip
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Uploaded test files
+uploaded_files/
