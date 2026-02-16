@@ -2,7 +2,7 @@
  * 滋賀医科大学学内保育所 あゆっこ — 業務自動化システム
  * Main Hono Application Entry Point
  * 
- * v4.0 (2026-02-16) — 月間ダッシュボード + 提出物生成
+ * v4.1 (2026-02-16) — 月間ダッシュボード仕上げ: 説明カード・今日サマリー・食バッジ・列順確定
  * Architecture: Hono (UI + proxy) → Python Generator (port 8787)
  */
 
@@ -25,7 +25,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '4.0',
+    version: '4.1',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Dashboard + Generator',
     timestamp: new Date().toISOString(),
@@ -75,7 +75,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v4.0</p>
+          <p class="text-xs text-gray-500">業務自動化システム v4.1</p>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -109,30 +109,124 @@ function mainPage(): string {
     <!-- ═══════════════════════════════════════════ -->
     <div id="panel-dashboard">
 
-      <!-- Empty state (before data loaded) -->
-      <div id="dashboard-empty" class="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-        <div class="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
-          <i class="fas fa-calendar-alt text-blue-400 text-2xl"></i>
+      <!-- ═══ EMPTY STATE (before data loaded) ═══ -->
+      <div id="dashboard-empty">
+        <!-- Guide card: always visible even before upload -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+          <div class="px-5 py-4">
+            <h3 class="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
+              <span class="w-6 h-6 bg-blue-600 rounded-lg flex items-center justify-center">
+                <i class="fas fa-info text-white text-xs"></i>
+              </span>
+              このシステムでできること
+            </h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+              <div class="bg-blue-50 rounded-lg px-4 py-3 border border-blue-100">
+                <div class="text-xs font-bold text-blue-800 mb-1"><i class="fas fa-calendar-alt mr-1"></i>月間ダッシュボード（この画面）</div>
+                <div class="text-xs text-blue-600 leading-relaxed">
+                  「誰が何日の何時に来るか」をカレンダー表示。<br>
+                  食数・早朝/延長/夜間を一目で確認 → 職員シフト計画に。
+                </div>
+              </div>
+              <div class="bg-green-50 rounded-lg px-4 py-3 border border-green-100">
+                <div class="text-xs font-bold text-green-800 mb-1"><i class="fas fa-file-archive mr-1"></i>提出物の一括生成</div>
+                <div class="text-xs text-green-600 leading-relaxed">
+                  月末にZIP出力 → 3フォルダで提出完了。<br>
+                  日報Excel / 保育料明細 / 保護者PDF を自動作成。
+                </div>
+              </div>
+            </div>
+            <!-- ZIP output explanation -->
+            <details>
+              <summary class="text-xs font-semibold text-gray-600 cursor-pointer flex items-center gap-1">
+                <i class="fas fa-folder-open text-gray-400"></i>
+                出力される提出物（ZIP）の詳細
+                <span class="text-gray-400 font-normal ml-1">クリックで展開</span>
+              </summary>
+              <div class="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+                <div class="bg-emerald-50 rounded-lg px-3 py-2 border border-emerald-200">
+                  <div class="font-bold text-emerald-800">01_園内管理</div>
+                  <div class="text-emerald-600 mt-0.5">園児登園確認表<br>児童実績表申請<br>◆保育時間（食数含む）</div>
+                </div>
+                <div class="bg-purple-50 rounded-lg px-3 py-2 border border-purple-200">
+                  <div class="font-bold text-purple-800">02_経理提出</div>
+                  <div class="text-purple-600 mt-0.5">保育料明細Excel<br>数量列のみ自動入力<br>（単価・合計はテンプレ計算）</div>
+                </div>
+                <div class="bg-blue-50 rounded-lg px-3 py-2 border border-blue-200">
+                  <div class="font-bold text-blue-800">03_保護者配布</div>
+                  <div class="text-blue-600 mt-0.5">園児別 利用明細書PDF<br>（自動生成）</div>
+                </div>
+                <div class="bg-gray-50 rounded-lg px-3 py-2 border border-gray-200">
+                  <div class="font-bold text-gray-700">_meta.json</div>
+                  <div class="text-gray-500 mt-0.5">未提出・例外の一覧<br>処理結果サマリー</div>
+                </div>
+              </div>
+            </details>
+          </div>
         </div>
-        <h3 class="text-lg font-semibold text-gray-700 mb-2">月間ダッシュボード</h3>
-        <p class="text-sm text-gray-500 mb-6 max-w-md mx-auto">
-          ルクミー登降園データと利用予定表をアップロードすると、<br>
-          月間の来園予定・食数・早朝/延長/夜間がカレンダーで表示されます。
-        </p>
-        <button onclick="switchTab('upload')" class="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
-          <i class="fas fa-upload mr-1"></i>データをアップロード
-        </button>
+
+        <!-- How to start -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-10 text-center">
+          <div class="w-14 h-14 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-calendar-alt text-blue-400 text-2xl"></i>
+          </div>
+          <h3 class="text-base font-semibold text-gray-700 mb-2">月間ダッシュボード</h3>
+          <p class="text-sm text-gray-500 mb-1 max-w-md mx-auto">
+            ルクミー登降園データと利用予定表をアップロードすると、<br>
+            月間の来園予定・食数・早朝/延長/夜間がカレンダーで表示されます。
+          </p>
+          <p class="text-xs text-gray-400 mb-5 max-w-md mx-auto">
+            ① ルクミー ② 予定表 を入れて「月間表示」。提出が必要なときだけ「提出物を作成」。
+          </p>
+          <button onclick="switchTab('upload')" class="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
+            <i class="fas fa-upload mr-1"></i>データをアップロード
+          </button>
+        </div>
       </div>
 
-      <!-- Dashboard content (after data loaded) -->
+      <!-- ═══ DASHBOARD CONTENT (after data loaded) ═══ -->
       <div id="dashboard-content" class="hidden">
-        <!-- Alerts -->
+
+        <!-- Guide card (collapsed in loaded state) -->
+        <details id="dashboard-guide" class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+          <summary class="px-5 py-3 cursor-pointer flex items-center justify-between text-sm">
+            <span class="font-semibold text-gray-700 flex items-center gap-2">
+              <i class="fas fa-info-circle text-blue-500"></i>このシステムでできること
+            </span>
+            <span class="text-xs text-gray-400">クリックで展開</span>
+          </summary>
+          <div class="px-5 pb-4">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs mt-2">
+              <div class="bg-emerald-50 rounded-lg px-3 py-2 border border-emerald-200">
+                <div class="font-bold text-emerald-800">01_園内管理</div>
+                <div class="text-emerald-600 mt-0.5">園児登園確認表 / 児童実績表 / ◆保育時間</div>
+              </div>
+              <div class="bg-purple-50 rounded-lg px-3 py-2 border border-purple-200">
+                <div class="font-bold text-purple-800">02_経理提出</div>
+                <div class="text-purple-600 mt-0.5">保育料明細（数量列のみ自動入力）</div>
+              </div>
+              <div class="bg-blue-50 rounded-lg px-3 py-2 border border-blue-200">
+                <div class="font-bold text-blue-800">03_保護者配布</div>
+                <div class="text-blue-600 mt-0.5">園児別 利用明細書PDF</div>
+              </div>
+              <div class="bg-gray-50 rounded-lg px-3 py-2 border border-gray-200">
+                <div class="font-bold text-gray-700">_meta.json</div>
+                <div class="text-gray-500 mt-0.5">未提出・例外の一覧</div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- TODAY SUMMARY (dynamic) -->
+        <div id="dashboard-today" class="mb-4"></div>
+
+        <!-- Alerts (submission issues) -->
         <div id="dashboard-alerts" class="mb-4"></div>
 
         <!-- Month header + summary -->
-        <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
           <h2 id="dashboard-month-title" class="text-lg font-bold text-gray-800"></h2>
-          <div id="dashboard-month-stats" class="flex gap-3"></div>
+          <div id="dashboard-month-stats" class="flex flex-wrap gap-2"></div>
         </div>
 
         <!-- Calendar + Detail split -->
@@ -140,7 +234,6 @@ function mainPage(): string {
           <!-- Calendar (2/3 width) -->
           <div class="lg:col-span-2">
             <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-              <!-- Weekday headers -->
               <div class="grid grid-cols-7 bg-gray-50 border-b border-gray-200">
                 <div class="px-2 py-2 text-center text-xs font-semibold text-gray-500">月</div>
                 <div class="px-2 py-2 text-center text-xs font-semibold text-gray-500">火</div>
@@ -150,21 +243,19 @@ function mainPage(): string {
                 <div class="px-2 py-2 text-center text-xs font-semibold text-red-400">土</div>
                 <div class="px-2 py-2 text-center text-xs font-semibold text-red-400">日</div>
               </div>
-              <!-- Calendar grid -->
               <div id="calendar-grid" class="grid grid-cols-7"></div>
             </div>
 
             <!-- Legend -->
-            <div class="mt-3 flex flex-wrap gap-3 text-xs text-gray-500">
+            <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
               <span><span class="inline-block w-2 h-2 rounded-full bg-blue-400 mr-1"></span>来園人数</span>
               <span>🍱昼食</span>
-              <span>🍪AMおやつ</span>
-              <span>🍪PMおやつ</span>
+              <span>🍪おやつ</span>
               <span>🍽夕食</span>
-              <span>🕒早朝</span>
-              <span>🕘延長</span>
-              <span>🌙夜間</span>
-              <span>💊病児</span>
+              <span class="text-orange-600">🕒早朝(~7:30)</span>
+              <span class="text-purple-600">🕘延長(18:00~)</span>
+              <span class="text-indigo-600">🌙夜間(20:00~)</span>
+              <span class="text-red-600">💊病児</span>
             </div>
           </div>
 

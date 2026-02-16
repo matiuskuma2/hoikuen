@@ -1,17 +1,17 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v4.0
+ * あゆっこ業務自動化 — Frontend Application v4.1
  * 
  * Architecture: UI → Hono proxy → Python Generator
  * 
- * v4.0: Calendar-style 利用予定ビュー (primary UI for Kimura)
- *   - Tab navigation: Dashboard / Upload / Generate
- *   - Monthly calendar grid with daily counts
- *   - Day-click detail panel (child list with times)
- *   - Summary stats bar (total children, meals, early/ext/night)
+ * v4.1: Dashboard UX polish for Kimura
+ *   - Guide card: 「このシステムでできること」+ ZIP output explanation
+ *   - Today summary banner (people/meals/early/ext/night)
+ *   - Calendar meal badges: 🍱4 🍪3 🍽1 on each day cell
+ *   - Day detail table: columns = 園児名 | 時間 | 🍱 | 🍪 | 🍽 | 区分
+ *   - Day detail sorted by start time
  * 
- * v3.3 (retained):
- *   - Full meta-driven results display from _meta.json
- *   - 3-category output cards, warnings panel, submission panel
+ * v4.0 (retained): Tab nav, calendar grid, day-click detail, generation
+ * v3.3 (retained): _meta.json, 3-category output, warnings, submission
  */
 
 // ═══════════════════════════════════════════
@@ -219,14 +219,14 @@ function renderDashboard(data) {
   document.getElementById('dashboard-month-title').textContent =
     `${data.year}年${data.month}月の利用予定`;
 
-  // Summary stats bar
+  // ── Monthly summary stats bar ──
   const ds = data.daily_summary || [];
-  const totalAttendanceDays = ds.reduce((s, d) => s + d.total_children, 0);
   const maxChildren = Math.max(...ds.map(d => d.total_children), 0);
   const totalEarly = ds.reduce((s, d) => s + d.early_morning_count, 0);
   const totalExt = ds.reduce((s, d) => s + d.extension_count, 0);
   const totalNight = ds.reduce((s, d) => s + d.night_count, 0);
   const totalLunch = ds.reduce((s, d) => s + d.lunch_count, 0);
+  const totalDinner = ds.reduce((s, d) => s + d.dinner_count, 0);
 
   document.getElementById('dashboard-month-stats').innerHTML = `
     <span class="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-medium">
@@ -240,7 +240,10 @@ function renderDashboard(data) {
     ${totalNight > 0 ? `<span class="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-xs font-medium">🌙夜間 ${totalNight}回</span>` : ''}
   `;
 
-  // Alerts (submission issues)
+  // ── TODAY SUMMARY (if current month matches) ──
+  renderTodaySummary(data);
+
+  // ── Alerts (submission issues) ──
   const alertsDiv = document.getElementById('dashboard-alerts');
   const subReport = data.submission_report;
   if (subReport && (subReport.not_submitted?.length > 0 || subReport.unmatched_schedules?.length > 0)) {
@@ -268,8 +271,60 @@ function renderDashboard(data) {
   // Render calendar grid
   renderCalendarGrid(data);
 
-  // Reset day detail
-  renderDayDetailEmpty();
+  // Auto-select today if viewing current month
+  const now = new Date();
+  if (data.year === now.getFullYear() && data.month === now.getMonth() + 1) {
+    selectDay(now.getDate());
+  } else {
+    renderDayDetailEmpty();
+  }
+}
+
+function renderTodaySummary(data) {
+  const todayDiv = document.getElementById('dashboard-today');
+  if (!todayDiv) return;
+
+  const now = new Date();
+  if (data.year !== now.getFullYear() || data.month !== now.getMonth() + 1) {
+    todayDiv.innerHTML = '';
+    return;
+  }
+
+  const today = now.getDate();
+  const ds = (data.daily_summary || []).find(d => d.day === today);
+  if (!ds || ds.total_children === 0) {
+    todayDiv.innerHTML = `
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 px-5 py-3 flex items-center gap-3">
+        <span class="text-sm font-bold text-gray-700"><i class="fas fa-sun text-yellow-400 mr-1"></i>今日 (${data.month}/${today})</span>
+        <span class="text-sm text-gray-400">来園予定なし</span>
+      </div>
+    `;
+    return;
+  }
+
+  const badges = [
+    `<span class="bg-blue-100 text-blue-800 px-2.5 py-1 rounded-full text-xs font-bold"><i class="fas fa-child mr-1"></i>${ds.total_children}名</span>`,
+  ];
+  if (ds.lunch_count > 0) badges.push(`<span class="bg-green-100 text-green-700 px-2 py-1 rounded-full text-xs font-medium">🍱昼食${ds.lunch_count}</span>`);
+  if (ds.am_snack_count > 0) badges.push(`<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium">🍪AM${ds.am_snack_count}</span>`);
+  if (ds.pm_snack_count > 0) badges.push(`<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium">🍪PM${ds.pm_snack_count}</span>`);
+  if (ds.dinner_count > 0) badges.push(`<span class="bg-orange-100 text-orange-700 px-2 py-1 rounded-full text-xs font-medium">🍽夕食${ds.dinner_count}</span>`);
+  if (ds.early_morning_count > 0) badges.push(`<span class="bg-orange-100 text-orange-800 px-2 py-1 rounded-full text-xs font-medium">🕒早朝${ds.early_morning_count}</span>`);
+  if (ds.extension_count > 0) badges.push(`<span class="bg-purple-100 text-purple-800 px-2 py-1 rounded-full text-xs font-medium">🕘延長${ds.extension_count}</span>`);
+  if (ds.night_count > 0) badges.push(`<span class="bg-indigo-100 text-indigo-800 px-2 py-1 rounded-full text-xs font-medium">🌙夜間${ds.night_count}</span>`);
+  if (ds.sick_count > 0) badges.push(`<span class="bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-medium">💊病児${ds.sick_count}</span>`);
+
+  todayDiv.innerHTML = `
+    <div class="bg-white rounded-xl shadow-sm border border-blue-200 px-5 py-3 cursor-pointer hover:bg-blue-50/50 transition-colors" onclick="selectDay(${today})">
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="text-sm font-bold text-gray-800"><i class="fas fa-sun text-yellow-400 mr-1"></i>今日 (${data.month}/${today} ${ds.weekday})</span>
+        <div class="flex flex-wrap gap-1.5">
+          ${badges.join('')}
+        </div>
+        <span class="text-xs text-blue-500 ml-auto"><i class="fas fa-arrow-right mr-0.5"></i>詳細</span>
+      </div>
+    </div>
+  `;
 }
 
 function renderCalendarGrid(data) {
@@ -319,7 +374,18 @@ function renderCalendarGrid(data) {
       countBadge = `<span class="badge ${badgeColor}">${n}名</span>`;
     }
 
-    // Mini indicators for special categories
+    // ── Meal badges: 🍱4 🍪3 🍽1 (compact 1-line) ──
+    let mealLine = '';
+    const mealParts = [];
+    if (ds.lunch_count > 0) mealParts.push(`<span title="昼食 ${ds.lunch_count}名">🍱${ds.lunch_count}</span>`);
+    const snackTotal = (ds.am_snack_count || 0) + (ds.pm_snack_count || 0);
+    if (snackTotal > 0) mealParts.push(`<span title="おやつ ${snackTotal}名">🍪${snackTotal}</span>`);
+    if (ds.dinner_count > 0) mealParts.push(`<span title="夕食 ${ds.dinner_count}名">🍽${ds.dinner_count}</span>`);
+    if (mealParts.length > 0) {
+      mealLine = `<div class="flex gap-1.5 mt-0.5 text-[10px] text-gray-500">${mealParts.join('')}</div>`;
+    }
+
+    // ── Special indicators: 🕒 🕘 🌙 💊 ──
     let indicators = '';
     const indParts = [];
     if (ds.early_morning_count > 0) indParts.push(`<span class="text-orange-500" title="早朝 ${ds.early_morning_count}名">🕒${ds.early_morning_count}</span>`);
@@ -328,15 +394,6 @@ function renderCalendarGrid(data) {
     if (ds.sick_count > 0) indParts.push(`<span class="text-red-500" title="病児 ${ds.sick_count}名">💊${ds.sick_count}</span>`);
     if (indParts.length > 0) {
       indicators = `<div class="flex gap-1 mt-0.5 text-[10px]">${indParts.join('')}</div>`;
-    }
-
-    // Meal summary (compact)
-    let mealLine = '';
-    if (ds.lunch_count > 0 || ds.dinner_count > 0) {
-      const mealParts = [];
-      if (ds.lunch_count > 0) mealParts.push(`🍱${ds.lunch_count}`);
-      if (ds.dinner_count > 0) mealParts.push(`🍽${ds.dinner_count}`);
-      mealLine = `<div class="text-[10px] text-gray-400 mt-0.5">${mealParts.join(' ')}</div>`;
     }
 
     // Children preview (top 2 names)
@@ -360,8 +417,8 @@ function renderCalendarGrid(data) {
           ${countBadge}
         </div>
         ${childPreview}
-        ${indicators}
         ${mealLine}
+        ${indicators}
       </div>
     `;
   }
@@ -443,25 +500,33 @@ function renderDayDetail(day, ds) {
     return;
   }
 
-  // Summary counters at top
+  // ── Summary counters: 人数 → 食 → 特記 ──
   let summaryHtml = `
-    <div class="grid grid-cols-3 gap-2 mb-3">
-      <div class="bg-blue-50 rounded-lg px-2 py-1.5 text-center">
+    <div class="grid grid-cols-5 gap-1.5 mb-3">
+      <div class="bg-blue-50 rounded-lg px-1.5 py-1.5 text-center">
         <div class="text-lg font-bold text-blue-700">${ds.total_children}</div>
         <div class="text-[10px] text-blue-500">来園</div>
       </div>
-      <div class="bg-green-50 rounded-lg px-2 py-1.5 text-center">
+      <div class="bg-green-50 rounded-lg px-1.5 py-1.5 text-center">
         <div class="text-lg font-bold text-green-700">${ds.lunch_count}</div>
-        <div class="text-[10px] text-green-500">昼食</div>
+        <div class="text-[10px] text-green-500">🍱昼食</div>
       </div>
-      <div class="bg-purple-50 rounded-lg px-2 py-1.5 text-center">
-        <div class="text-lg font-bold text-purple-700">${ds.pm_snack_count || 0}</div>
-        <div class="text-[10px] text-purple-500">おやつ</div>
+      <div class="bg-amber-50 rounded-lg px-1.5 py-1.5 text-center">
+        <div class="text-lg font-bold text-amber-700">${(ds.am_snack_count || 0) + (ds.pm_snack_count || 0)}</div>
+        <div class="text-[10px] text-amber-500">🍪おやつ</div>
+      </div>
+      <div class="bg-orange-50 rounded-lg px-1.5 py-1.5 text-center">
+        <div class="text-lg font-bold text-orange-700">${ds.dinner_count || 0}</div>
+        <div class="text-[10px] text-orange-500">🍽夕食</div>
+      </div>
+      <div class="bg-gray-50 rounded-lg px-1.5 py-1.5 text-center">
+        <div class="text-lg font-bold text-gray-600">${ds.early_morning_count + ds.extension_count + ds.night_count + ds.sick_count}</div>
+        <div class="text-[10px] text-gray-400">特記</div>
       </div>
     </div>
   `;
 
-  // Special counts row
+  // Special counts badges
   const specials = [];
   if (ds.early_morning_count > 0) specials.push(`<span class="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-[10px] font-medium">🕒 早朝 ${ds.early_morning_count}名</span>`);
   if (ds.extension_count > 0) specials.push(`<span class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-[10px] font-medium">🕘 延長 ${ds.extension_count}名</span>`);
@@ -472,7 +537,15 @@ function renderDayDetail(day, ds) {
     summaryHtml += `<div class="flex flex-wrap gap-1 mb-3">${specials.join('')}</div>`;
   }
 
-  // Children table
+  // ── Children table ──
+  // Columns: 園児名 | 時間 | 🍱 | 🍪 | 🍽 | 区分
+  // Sort by start time (earliest first)
+  const sorted = [...children].sort((a, b) => {
+    const tA = a.actual_checkin || a.planned_start || '99:99';
+    const tB = b.actual_checkin || b.planned_start || '99:99';
+    return tA.localeCompare(tB);
+  });
+
   let tableHtml = `
     <div class="border border-gray-200 rounded-lg overflow-hidden">
       <table class="w-full text-xs">
@@ -480,48 +553,50 @@ function renderDayDetail(day, ds) {
           <tr class="bg-gray-50 border-b border-gray-200">
             <th class="px-2 py-1.5 text-left text-gray-600 font-semibold">園児名</th>
             <th class="px-2 py-1.5 text-center text-gray-600 font-semibold">時間</th>
-            <th class="px-2 py-1.5 text-center text-gray-600 font-semibold">区分</th>
+            <th class="px-1 py-1.5 text-center text-gray-400" title="昼食">🍱</th>
+            <th class="px-1 py-1.5 text-center text-gray-400" title="おやつ">🍪</th>
+            <th class="px-1 py-1.5 text-center text-gray-400" title="夕食">🍽</th>
+            <th class="px-1 py-1.5 text-center text-gray-600 font-semibold">区分</th>
           </tr>
         </thead>
         <tbody>
   `;
 
-  // Sort: early morning first, then by start time
-  const sorted = [...children].sort((a, b) => {
-    const tA = a.actual_checkin || a.planned_start || '99:99';
-    const tB = b.actual_checkin || b.planned_start || '99:99';
-    return tA.localeCompare(tB);
-  });
-
   sorted.forEach((c, idx) => {
-    const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+    const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70';
     const startTime = _shortTime(c.actual_checkin || c.planned_start);
     const endTime = _shortTime(c.actual_checkout || c.planned_end);
     const timeStr = startTime && endTime ? `${startTime}-${endTime}` : '-';
 
-    // Status badges
+    // Meal marks: ○ = yes, blank = no
+    const lunchMark = c.has_lunch ? '<span class="text-green-600 font-bold">○</span>' : '';
+    const snackMark = (c.has_am_snack || c.has_pm_snack) ? '<span class="text-amber-600 font-bold">○</span>' : '';
+    const dinnerMark = c.has_dinner ? '<span class="text-orange-600 font-bold">○</span>' : '';
+
+    // Special badges (early/ext/night/sick)
     const badges = [];
     if (c.is_early_morning) badges.push('<span class="text-orange-500" title="早朝">🕒</span>');
     if (c.is_extension) badges.push('<span class="text-purple-500" title="延長">🕘</span>');
     if (c.is_night) badges.push('<span class="text-indigo-500" title="夜間">🌙</span>');
     if (c.is_sick) badges.push('<span class="text-red-500" title="病児">💊</span>');
-    if (c.has_lunch) badges.push('<span title="昼食">🍱</span>');
 
     // Enrollment type badge
     const enrollBadge = c.enrollment_type === '一時'
-      ? '<span class="bg-yellow-100 text-yellow-700 px-1 py-0.5 rounded text-[9px] font-medium">一時</span>'
+      ? '<span class="bg-yellow-100 text-yellow-700 px-1 py-0.5 rounded text-[9px] font-medium ml-1">一時</span>'
       : '';
 
     tableHtml += `
       <tr class="${rowBg} border-b border-gray-100 last:border-0">
         <td class="px-2 py-1.5">
-          <div class="flex items-center gap-1">
-            <span class="font-medium text-gray-800">${c.name}</span>
-            ${enrollBadge}
+          <div class="flex items-center">
+            <span class="font-medium text-gray-800">${c.name}</span>${enrollBadge}
           </div>
         </td>
-        <td class="px-2 py-1.5 text-center text-gray-600 font-mono">${timeStr}</td>
-        <td class="px-2 py-1.5 text-center">${badges.join('')}</td>
+        <td class="px-2 py-1.5 text-center text-gray-600 font-mono whitespace-nowrap">${timeStr}</td>
+        <td class="px-1 py-1.5 text-center">${lunchMark}</td>
+        <td class="px-1 py-1.5 text-center">${snackMark}</td>
+        <td class="px-1 py-1.5 text-center">${dinnerMark}</td>
+        <td class="px-1 py-1.5 text-center">${badges.join('')}</td>
       </tr>
     `;
   });
@@ -1065,8 +1140,12 @@ function resetAll() {
   updateSummary();
 
   // Reset dashboard
-  document.getElementById('dashboard-empty').classList.remove('hidden');
-  document.getElementById('dashboard-content').classList.add('hidden');
+  const dashEmpty = document.getElementById('dashboard-empty');
+  const dashContent = document.getElementById('dashboard-content');
+  if (dashEmpty) dashEmpty.classList.remove('hidden');
+  if (dashContent) dashContent.classList.add('hidden');
+  const todayDiv = document.getElementById('dashboard-today');
+  if (todayDiv) todayDiv.innerHTML = '';
 
   // Reset generation
   document.getElementById('step-progress').classList.add('hidden');
