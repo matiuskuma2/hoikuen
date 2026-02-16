@@ -1,8 +1,9 @@
 # あゆっこ保育園 業務自動化システム — 完全要件定義書
 
-> **Version**: 2.0 (2026-02-16)
-> **Status**: MVP仕様確定版
+> **Version**: 3.0 (2026-02-16)
+> **Status**: MVP事故防止版（レビュー反映済み）
 > **Author**: GenSpark AI Developer
+> **Reviewed by**: モギモギ（関屋紘之）
 
 ---
 
@@ -25,6 +26,28 @@
 ### 1.3 MVPスコープ
 **IN**: 月次帳票自動生成（日報3シート、大学提出用、経理用保育料明細、保護者向け利用明細書）
 **OUT**: LINE連携、リアルタイム通知、職員シフト管理（将来拡張）
+
+### 1.4 MVP設計原則（v3.0 追加）
+
+```
+■ 原則1: 「書き込みセル最小化」
+  → テンプレの数式・書式・条件付き書式を壊さない
+  → 数式で自動計算されるシートには直接書かない
+  → 入力元（◆保育時間等）にだけ書き、下流は数式に任せる
+
+■ 原則2: 「壊れたら返さない」
+  → 書き込み後に #REF!/#VALUE! が増えたらジョブ失敗
+  → 数式列の数式が消えたらジョブ失敗
+  → 成果物を返さず、原因ログを返す
+
+■ 原則3: 「1画面完結」
+  → MVP入力は1画面: 対象月 + ルクミー + 予定表 → 生成ボタン
+  → テンプレ・料金ルールは初回設定画面で別管理
+
+■ 原則4: 「止めない」
+  → 1園児のエラーは他園児に波及させない
+  → 例外は警告として蓄積し、対処提案付きで表示
+```
 
 ---
 
@@ -199,7 +222,7 @@
 |---|--------|------|------|------|
 | ① | 園児登園確認表 | Excel (日報内) | 園内管理 | 日次の出欠確認 |
 | ② | 児童実績表申請 | Excel (日報内) | 行政提出 | 登降園時刻・利用時間 |
-| ③ | 給食実数表（個人） | Excel (日報内) | 園内管理 | 食事提供実績 |
+| ③ | 給食実数表（個人） | Excel (日報内) | 園内管理 | 食事提供実績（★MVP: ◆保育時間から数式自動反映。直接書き込みしない） |
 | ④ | ◆保育時間 | Excel (日報内) | 園内管理 | 予定vs実績の全時間管理 |
 | ⑤ | 保育時間 (提出用) | Excel (日報内) | 大学提出 | ④の提出フォーマット版 |
 | ⑥ | ◆日次情報 | Excel (日報内) | 園内管理 | 日別のサマリ（数式駆動） |
@@ -235,10 +258,15 @@
     08:12 → "8:12"  ※ 先頭0なし
     17:05 → "17:05"
 
-列オフセット計算:
+列オフセット計算（★ v3.0: 固定オフセット方式に確定）:
   col_index = 6 + (day_of_month - 1)
   day 1 → col F (index 6)
   day 31 → col AJ (index 36)
+  
+  ★ ヘッダ行のDATE値は読み取りに使わない
+  （Row4の日付はDATE値ではなく数式で生成されている可能性があり、
+   data_only=true で読むと値に見えるが、数式編集すると壊れるリスクがある。
+   固定オフセットが最も壊れにくい。）
 ```
 
 ### 3.3 児童実績表申請□ — 書き込み仕様
@@ -277,57 +305,34 @@
   一時利用数: 整数（一時園児のみ、30分単位の利用ブロック数）
 ```
 
-### 3.4 給食実数表（個人）□ — 書き込み仕様
+### 3.4 給食実数表（個人）□ — MVP方針（v3.0 変更）
 
 ```
-シート名: "給食実数表（個人）□"
-ヘッダ:
+★★★ MVP決定: このシートには直接書き込まない ★★★
+
+理由:
+  1. このシートは◆保育時間シートのOFFSET参照で駆動している
+  2. ◆保育時間の給食列（昼食/朝おやつ/午後おやつ/夕食）に〇を書けば
+     給食実数表は数式で自動計算される
+  3. 直接書き込むとテンプレの計算構造を壊すリスクが高い
+     （データ検証・条件付き書式がExcelJS保存時に落ちる危険）
+  4. 「書き込みセル最小化」原則に従い、入力元のみに書く
+
+MVP動作:
+  → ◆保育時間シートに予定/実績/給食マークを正しく書く
+  → 給食実数表（個人）□はテンプレの数式が自動反映
+  → システムは一切触らない（読み取り専用シート扱い）
+
+Post-MVP:
+  → 数式で自動反映されない項目があれば、その時点で書き込み対象に昇格
+  → ただし書き込む場合も「値のみ＋検証」の2段階方式を必ず適用
+
+参考: 構造分析結果（読み取り専用として保持）
+  シート名: "給食実数表（個人）□"
   Row 1-5: 単価定義 (C2:D5 = 昼食300, 朝おやつ50, 午後おやつ50, 夕食300)
-           ※ 午後おやつ単価は保育料案内では100円だが、このシートでは50円
-              → テンプレ単価を正として読み取る
-  Row 7: タイトル行
-  Row 9: 日付ヘッダ F-AJ = 2026-01-01〜01-31
-         AK=計, AL=単価, AM=小計, AN=合計
-         AO=昼食計, AP=朝おやつ計, AQ=午後おやつ計, AR=夕食計
-
-データ領域:
   Row 10〜: 8行/園児ブロック (stride=8)
-  
-  ブロック構成（前半4行=個人日次、後半4行=月極/集計）:
-  
-  行1 (offset+0): 昼食（個人）
-    B列 = No, C列 = 園児名, D列 = クラス学齢, E列 = "昼食"
-    F-AJ = 〇/△/空白
-    AK = 計, AL = 単価(300), AM = 小計
-    
-  行2 (offset+1): 朝おやつ（個人）
-    E列 = "朝おやつ"
-    
-  行3 (offset+2): 午後おやつ（個人）
-    E列 = "午後おやつ"
-    
-  行4 (offset+3): 夕食（個人）
-    E列 = "夕食"
-    
-  行5 (offset+4): 昼食（月極集計）
-    D列 = "月極" or クラス学齢
-    E列 = "昼食"
-    F-AJ = 〇/△ (実績)
-    AK = 計, AL = 単価, AM = 小計, AN = 合計
-    AO-AR = 食種別合計
-    
-  行6 (offset+5): 朝おやつ（月極集計）
-  行7 (offset+6): 午後おやつ（月極集計）
-  行8 (offset+7): 夕食（月極集計）
-
-園児n のブロック開始行: 10 + (n-1) * 8
-
-★ 書き込み値:
-  日次セル: "〇" (通常食) / "△" (アレルギー食) / 空白
-  AK列(計): 整数（〇の合計）※ 数式の可能性あり → 上書きしない
-  
-  注: 個人行(行1-4)と月極集計行(行5-8)の2段構成
-  MVP: 行5-8(月極集計行)に〇を書き込む（行1-4は空でも可）
+    前半4行 = 個人日次、後半4行 = 月極集計
+    AK=計, AL=単価, AM=小計, AN=合計, AO-AR=食種別合計
 ```
 
 ### 3.5 ◆保育時間 — 書き込み仕様
@@ -536,8 +541,8 @@ CREATE TABLE IF NOT EXISTS usage_facts (
   day INTEGER NOT NULL,
   
   -- 課金用の開始・終了
-  billing_start TEXT,                -- 課金開始 (HH:MM) = max(planned_start, 開園)
-  billing_end TEXT,                  -- 課金終了 (HH:MM) = actual_checkout
+  billing_start TEXT,                -- 課金開始 (HH:MM) = min(planned_start, actual_checkin)
+  billing_end TEXT,                  -- 課金終了 (HH:MM) = max(planned_end, actual_checkout)
   billing_minutes INTEGER,           -- 課金対象分数
   
   -- 時間区分フラグ
@@ -677,9 +682,11 @@ CREATE TABLE IF NOT EXISTS name_mappings (
   "version": "2.0",
   
   "header": {
+    "note": "v3.0: 日付列はヘッダ読み取りではなく固定オフセットで決定（数式破損リスク回避）",
     "date_row": 4,
     "date_cols": { "start": "F", "end": "AJ" },
-    "date_format": "excel_datetime",
+    "date_format": "fixed_offset",
+    "date_col_formula": "col_F_index(6) + (day_of_month - 1)",
     "serial_row": 5
   },
   
@@ -768,70 +775,33 @@ CREATE TABLE IF NOT EXISTS name_mappings (
 }
 ```
 
-### 5.3 給食実数表（個人）
+### 5.3 給食実数表（個人）— MVP: 書き込まない（v3.0 変更）
 
 ```json
 {
   "template_kind": "daily_report_xlsx",
   "sheet_name": "給食実数表（個人）□",
-  "version": "2.0",
+  "version": "3.0",
   
-  "header": {
-    "unit_prices": {
-      "row_range": [2, 5],
-      "mapping": { "C2": "lunch", "C3": "am_snack", "C4": "pm_snack", "C5": "dinner" }
-    },
-    "date_row": 9,
-    "date_cols": { "start": "F", "end": "AJ" },
-    "summary_cols": {
-      "count": "AK",
-      "unit_price": "AL",
-      "subtotal": "AM",
-      "total": "AN",
-      "lunch_total": "AO",
-      "am_snack_total": "AP",
-      "pm_snack_total": "AQ",
-      "dinner_total": "AR"
-    }
-  },
-  
-  "child_list": {
-    "start_row": 10,
-    "stride": 8,
-    "rows_per_child": [
-      { "offset": 0, "label": "昼食(個人)", "meal_type": "lunch", "layer": "individual" },
-      { "offset": 1, "label": "朝おやつ(個人)", "meal_type": "am_snack", "layer": "individual" },
-      { "offset": 2, "label": "午後おやつ(個人)", "meal_type": "pm_snack", "layer": "individual" },
-      { "offset": 3, "label": "夕食(個人)", "meal_type": "dinner", "layer": "individual" },
-      { "offset": 4, "label": "昼食(月極集計)", "meal_type": "lunch", "layer": "summary" },
-      { "offset": 5, "label": "朝おやつ(月極集計)", "meal_type": "am_snack", "layer": "summary" },
-      { "offset": 6, "label": "午後おやつ(月極集計)", "meal_type": "pm_snack", "layer": "summary" },
-      { "offset": 7, "label": "夕食(月極集計)", "meal_type": "dinner", "layer": "summary" }
-    ],
-    "cols": {
-      "no": "B",
-      "name": "C",
-      "class_age": "D",
-      "meal_type": "E"
-    }
-  },
+  "mvp_policy": "DO_NOT_WRITE",
+  "reason": "◆保育時間シートのOFFSET参照で駆動。入力元(◆保育時間)にだけ書き、このシートは数式に任せる。",
   
   "data_write": {
-    "mode": "meal_mark",
-    "col_offset_formula": "col_F + (day - 1)",
-    "target_layer": "summary",
-    "values": {
-      "normal": "〇",
-      "allergy": "△",
-      "none": null
-    },
-    "summary_cols_formula": "leave_as_is"
+    "mode": "none",
+    "note": "MVPでは一切書き込まない。◆保育時間の給食列が正しければ自動反映される。"
   },
   
   "post_write_checks": [
-    { "check": "no_ref_error", "scope": "data_area" },
-    { "check": "summary_not_empty", "cols": ["AK", "AN"] }
-  ]
+    { "check": "no_ref_error", "scope": "data_area", "note": "他シート書き込み後に連鎖破損がないか確認" },
+    { "check": "summary_not_empty", "cols": ["AK", "AN"], "note": "数式の自動計算結果が入っているか" }
+  ],
+  
+  "structure_reference": {
+    "note": "Post-MVP用の構造情報（参考保持）",
+    "start_row": 10,
+    "stride": 8,
+    "unit_prices": { "C2": "昼食=300", "C3": "朝おやつ=50", "C4": "午後おやつ=50", "C5": "夕食=300" }
+  }
 }
 ```
 
@@ -1072,21 +1042,40 @@ FUNCTION compute_usage_fact(
     RETURN fact
 
   // ─── Step 2: 課金時間の決定 ───
-  // ★ 核心ルール: planned_start + actual_checkout
+  // ★★★ 核心ルール (v3.0 修正) ★★★
+  //   start = min(planned_start, actual_checkin)  ← 早い方を採用
+  //   end   = max(planned_end, actual_checkout)   ← 遅い方を採用
+  //   どちらか欠けている場合はある方を使用
+  //
+  // 例: 予定 9:00-15:00 / 実績 9:15-15:15 → 課金 9:00-15:15
+  // 例: 予定 9:00-15:00 / 実績 8:45-14:30 → 課金 8:45-15:00
   
   IF has_plan AND has_checkin:
-    billing_start = plan.planned_start         // 予定の開始
-    billing_end   = actual.actual_checkout      // 実績の終了
+    // 開始: 予定と実績の早い方
+    plan_start_min = toMinutes(plan.planned_start)
+    actual_start_min = toMinutes(actual.actual_checkin)
+    billing_start = (actual_start_min < plan_start_min)
+      ? actual.actual_checkin
+      : plan.planned_start
     
-    // 実績開始が予定より早い場合 → 実績開始を使用
-    IF toMinutes(actual.actual_checkin) < toMinutes(plan.planned_start):
-      billing_start = actual.actual_checkin
-      fact.exception_notes += "実績登園が予定より早い"
+    // 終了: 予定と実績の遅い方（どちらか欠けたらある方）
+    IF has_checkout AND plan.planned_end != null:
+      plan_end_min = toMinutes(plan.planned_end)
+      actual_end_min = toMinutes(actual.actual_checkout)
+      billing_end = (actual_end_min > plan_end_min)
+        ? actual.actual_checkout
+        : plan.planned_end
+    ELSE IF has_checkout:
+      billing_end = actual.actual_checkout
+    ELSE IF plan.planned_end != null:
+      billing_end = plan.planned_end
+    ELSE:
+      billing_end = null
     
     fact.attendance_status = 'present'
     
     // 早退判定: 実績降園が予定降園より30分以上前
-    IF has_checkout AND 
+    IF has_checkout AND plan.planned_end != null AND
        toMinutes(plan.planned_end) - toMinutes(actual.actual_checkout) > 30:
       fact.attendance_status = 'early_leave'
     
@@ -1101,10 +1090,9 @@ FUNCTION compute_usage_fact(
     fact.exception_notes = "予定表未提出・実績のみ"
     fact.attendance_status = 'present'
 
-  // 降園未記録の場合
-  IF NOT has_checkout:
-    billing_end = null
-    fact.exception_notes += " / 降園未記録"
+  // 降園未記録（予定終了もない場合）
+  IF billing_end == null:
+    fact.exception_notes += " / 降園未記録・予定終了もなし"
 
   fact.billing_start = formatTime(billing_start)
   fact.billing_end = formatTime(billing_end)
@@ -1288,38 +1276,50 @@ FUNCTION formatTime(time_str: string | null) → string | null:
     - セルに直接値をセット
     - 数式セルには絶対に触らない
     - スタイル・書式は変更しない
+    - 条件付き書式・データ検証には触れない
   
-  Phase 2: 検証
-    - #REF! エラーチェック（全データ領域）
-    - #VALUE! エラーチェック（全データ領域）
+  Phase 2: 検証（★ v3.0: NGなら成果物を返さない）
+    - #REF! エラーチェック（書き込み前後で増えていないか）
+    - #VALUE! エラーチェック（同上）
     - 数式列の数式が残っているか確認
     - 集計列が空でないか確認
     - 合計値が0以上か確認
+    → いずれかNGの場合: ジョブをfailedにし、成果物を返さない
+    → 原因ログ + テンプレバックアップを返却
 
 ■ ExcelJSの制約対策:
   - マクロ付きファイル(.xlsm)は非対応 → .xlsxで保存
   - 条件付き書式は読み込み時に消える可能性 → 上書き回避
   - ピボットテーブル非対応 → 該当シートは触らない
+  - ★ v3.0: 給食実数表（個人）はOFFSET参照が多いため直接書き込まない
   
 ■ テンプレートバックアップ:
   - 書き込み前にR2にバックアップを保存
-  - 破損検知時は元ファイルを返却
+  - 破損検知時は元ファイル（バックアップ）を返却
+  - バックアップキー: templates/{nursery_id}/{template_type}/{timestamp}_backup.xlsx
+
+■ ★ v3.0追加: 書き込み前後の差分検査
+  - 書き込み前に「エラーセル数」をスナップショット
+  - 書き込み後に「エラーセル数」を再カウント
+  - 増えていたら → ジョブfailed（書き込みが原因で壊れた）
+  - 減ったor同じ → OK
 ```
 
 ### 7.2 検証チェックリスト
 
 ```typescript
 interface PostWriteCheck {
-  // 必須チェック
-  no_ref_error: boolean;       // #REF! が存在しない
-  no_value_error: boolean;     // #VALUE! が存在しない
-  formula_intact: boolean;     // 数式列の数式が残っている
-  summary_not_empty: boolean;  // 集計列が空でない
+  // ★ v3.0: 必須チェック（NGなら成果物を返さない=FATAL）
+  no_new_ref_error: boolean;     // #REF! が書き込み前より増えていない
+  no_new_value_error: boolean;   // #VALUE! が書き込み前より増えていない
+  formula_intact: boolean;       // 数式列の数式が残っている
+  summary_not_empty: boolean;    // 集計列が空でない（数式の自動計算結果）
   
-  // 警告チェック（止めない）
-  total_positive: boolean;     // 合計値が0以上
-  row_count_match: boolean;    // 書き込み行数 == 園児数
-  date_range_match: boolean;   // 日付列が対象月と一致
+  // 警告チェック（止めない=WARN）
+  total_positive: boolean;       // 合計値が0以上
+  row_count_match: boolean;      // 書き込み行数 == 園児数
+  date_range_match: boolean;     // 日付列が対象月と一致
+  meal_sheet_auto_filled: boolean; // 給食実数表が◆保育時間から自動反映されているか
 }
 ```
 
@@ -1389,9 +1389,9 @@ Phase 4: GENERATING (成果物生成)
   4-A: 日報Excelテンプレートを読み込み
   4-B: 園児登園確認表□ 書き込み
   4-C: 児童実績表申請□ 書き込み
-  4-D: 給食実数表（個人）□ 書き込み
-  4-E: ◆保育時間 書き込み
-  4-F: 保育時間(提出用) 書き込み（or 数式による自動反映確認）
+  4-D: ◆保育時間 書き込み ★ 給食列はここで書く（給食実数表の入力元）
+  4-E: 保育時間(提出用) 書き込み（or 数式による自動反映確認）
+  4-F: 給食実数表（個人）□ → 書き込まない（数式の自動反映を検証のみ）
   4-G: 保育料明細Excel 書き込み
   4-H: 利用明細書PDF 生成（園児ごと）
   4-I: テンプレート検証（#REF!, #VALUE!, 数式残存チェック）
@@ -1676,8 +1676,8 @@ Screen 4: 園児管理 (/children)  ※ MVP後
 ### Phase D: テンプレート書き込み (Week 3-4)
 - [ ] D-1: 園児登園確認表□（1行/園児、HH:MM-HH:MM文字列）
 - [ ] D-2: 児童実績表申請□（4行/園児ブロック）
-- [ ] D-3: 給食実数表（8行/園児ブロック）
-- [ ] D-4: ◆保育時間（横展開）
+- [ ] D-3: ◆保育時間（横展開）★ 給食列もここで書く
+- [ ] D-4: 給食実数表 → MVPでは書き込まない（◆保育時間からの自動反映を検証）
 - [ ] D-5: 保育料明細（数量列のみ）
 - [ ] D-6: テンプレート検証（#REF! / #VALUE!チェック）
 
@@ -1811,6 +1811,44 @@ Screen 4: 園児管理 (/children)  ※ MVP後
   園児名簿:     D列                → "長谷　律希" (全角スペース)
   予定表:       B6                 → "長谷律希" (スペースなしの場合あり)
   保育料明細:   K列                → "長谷　律希" (全角スペース)
+```
+
+---
+
+## 付録C: v3.0 変更履歴（v2.0からの差分）
+
+```
+■ 課金時間ルール【重大修正】
+  旧: start = planned_start, end = actual_checkout
+  新: start = min(planned_start, actual_checkin)
+      end   = max(planned_end, actual_checkout)
+  理由: 木村さんの要望「予定9:00-15:00, 実績9:15-15:15 → 課金9:00-15:15」を
+        正確に反映。予定と実績の"広い方"を取るルール。
+
+■ 給食実数表（個人）□【方針変更】
+  旧: MVPで8行/園児ブロックに〇を書き込む
+  新: MVPでは書き込まない。◆保育時間の給食列に〇を書けば数式で自動反映。
+  理由: OFFSET参照が多く、ExcelJS保存で壊れるリスク大。
+        「書き込みセル最小化」原則に従う。
+
+■ 日付列の決定方法【安全性向上】
+  旧: ヘッダRow4の日付値を読み取って列を決定
+  新: 固定オフセット col = F + (day - 1) で列を決定
+  理由: Row4の日付はDATE値ではなく数式で生成されている可能性。
+        固定オフセットが最も壊れにくい。
+
+■ テンプレート破損ガード【強化】
+  旧: 検証はWARNレベル（止めない）
+  新: 必須チェック4項目がNGなら成果物を返さない（FATAL）
+      書き込み前後のエラーセル数を差分比較
+  理由: 壊れたExcelを返すと運用事故になる。
+        「壊れたら返さない」がMVPの安全弁。
+
+■ 設計原則の明文化【追加】
+  原則1: 書き込みセル最小化
+  原則2: 壊れたら返さない
+  原則3: 1画面完結
+  原則4: 止めない（1園児のエラーは他に波及させない）
 ```
 
 ---
