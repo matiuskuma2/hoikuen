@@ -2,7 +2,7 @@
  * 滋賀医科大学学内保育所 あゆっこ — 業務自動化システム
  * Main Hono Application Entry Point
  * 
- * v4.2 (2026-02-16) — ダッシュボード強化: 今日/明日/今週/月間タブ、提出物説明、AI読み取り入口、マニュアル
+ * v4.3 (2026-02-16) — テンプレ登録UX: 初回登録セクション分離、登録済み状態管理、木村さん向け説明文
  * Architecture: Hono (UI + proxy) → Python Generator (port 8787)
  */
 
@@ -25,7 +25,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '4.2',
+    version: '4.3',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Dashboard + Generator',
     timestamp: new Date().toISOString(),
@@ -75,7 +75,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v4.2</p>
+          <p class="text-xs text-gray-500">業務自動化システム v4.3</p>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -426,16 +426,46 @@ function mainPage(): string {
             </div>
           </div>
 
-          <details class="mb-4">
-            <summary class="text-sm font-semibold text-gray-700 cursor-pointer mb-3">
-              <i class="fas fa-cog text-gray-400 text-xs mr-1"></i>テンプレートファイル（任意）
-              <span class="text-xs text-gray-400 ml-2">クリックで展開</span>
-            </summary>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+          <!-- ═══ SECTION C: テンプレート（初回登録） ═══ -->
+          <div class="mb-4">
+            <div class="flex items-center gap-2 mb-3">
+              <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                <span class="w-5 h-5 bg-amber-500 rounded flex items-center justify-center">
+                  <i class="fas fa-star text-white text-[10px]"></i>
+                </span>
+                初回のみ：提出物テンプレート
+              </h3>
+              <span class="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">初回だけ登録</span>
+            </div>
+
+            <!-- 説明カード: これは何？ -->
+            <div class="bg-amber-50 rounded-xl p-4 border border-amber-200 mb-4">
+              <div class="flex items-start gap-3">
+                <div class="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <i class="fas fa-question-circle text-amber-600"></i>
+                </div>
+                <div class="text-xs text-amber-800 leading-relaxed">
+                  <p class="font-bold mb-1">日報テンプレとは？</p>
+                  <p>今まで使っている「<strong>日報202601.xlsx</strong>」をそのまま型として使い、<br>
+                  園児登園確認表・児童実績表申請・◆保育時間などを<strong>自動入力した完成版</strong>を作ります。</p>
+                  <p class="mt-1.5"><strong>大学提出を日報Excelで行う場合に必要です（初回だけ）。</strong></p>
+                  <p class="text-amber-600 mt-1.5">※ダッシュボード表示だけなら不要です。提出物ZIPに含める場合のみ使います。</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- 登録状態バー -->
+            <div id="template-status-bar" class="mb-3 flex flex-wrap gap-2">
+              <!-- populated by JS: shows ✅登録済み or ⚠️未登録 per template -->
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label class="text-sm font-medium text-gray-700 mb-2 block">
                   <i class="fas fa-file-alt text-emerald-600 mr-1"></i>日報テンプレート
+                  <span class="text-xs text-amber-600 ml-1" id="daily-template-status-label">(未登録)</span>
                 </label>
+                <p class="text-[10px] text-gray-500 mb-1.5">提出物に日報Excel (01_園内管理) を含める場合に必要</p>
                 <div id="drop-daily_template" class="drop-zone rounded-lg p-4 text-center cursor-pointer hover:border-emerald-400"
                      ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)"
                      ondrop="handleDrop(event, 'daily_template')" onclick="document.getElementById('input-daily_template').click()">
@@ -448,7 +478,9 @@ function mainPage(): string {
               <div>
                 <label class="text-sm font-medium text-gray-700 mb-2 block">
                   <i class="fas fa-file-invoice-dollar text-purple-600 mr-1"></i>保育料明細テンプレート
+                  <span class="text-xs text-amber-600 ml-1" id="billing-template-status-label">(未登録)</span>
                 </label>
+                <p class="text-[10px] text-gray-500 mb-1.5">提出物に保育料明細 (02_経理提出) を含める場合に必要</p>
                 <div id="drop-billing_template" class="drop-zone rounded-lg p-4 text-center cursor-pointer hover:border-purple-400"
                      ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)"
                      ondrop="handleDrop(event, 'billing_template')" onclick="document.getElementById('input-billing_template').click()">
@@ -459,7 +491,7 @@ function mainPage(): string {
                 <div id="file-list-billing_template" class="mt-1 space-y-1"></div>
               </div>
             </div>
-          </details>
+          </div>
 
           <div id="upload-summary" class="hidden mt-4 bg-blue-50 rounded-lg p-4">
             <div class="flex items-center justify-between flex-wrap gap-3">

@@ -1,15 +1,15 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v4.2
+ * あゆっこ業務自動化 — Frontend Application v4.3
  * 
  * Architecture: UI → Hono proxy → Python Generator
  * 
- * v4.2: Dashboard強化
- *   - 今日/明日/今週/月間 サブタブ (switchDashView)
- *   - 提出物作成タブ: ZIP内容の固定説明カード (always visible)
- *   - データ入力: Excel/PDF・写真分割 + AI読み取りボタン
- *   - 1ページマニュアル (modal)
- *   - Scoped view: renderScopedDays for today/tomorrow/week
+ * v4.3: テンプレート登録UX改善
+ *   - テンプレートを「初回登録」セクションに分離
+ *   - localStorage でテンプレ登録状態を管理
+ *   - 「登録済み（前回のを使用）」 / 「未登録」表示
+ *   - 木村さん向け説明文: 日報テンプレとは？
  * 
+ * v4.2 (retained): 今日/明日/今週/月間 サブタブ, ZIP説明, AI読み取り, マニュアル
  * v4.1 (retained): Guide card, today summary banner, meal badges, day detail table
  * v4.0 (retained): Tab nav, calendar grid, day-click detail, generation
  * v3.3 (retained): _meta.json, 3-category output, warnings, submission
@@ -37,6 +37,11 @@ const state = {
   selectedDay: null,
   activeTab: 'dashboard',
   dashView: 'today', // 'today' | 'tomorrow' | 'week' | 'month'
+  // Template registration state (persisted in localStorage)
+  templateRegistered: {
+    daily: false,
+    billing: false,
+  },
 };
 
 // ═══════════════════════════════════════════
@@ -277,6 +282,15 @@ function addFiles(files, type) {
   renderFileList(type);
   updateSummary();
   updateAiReadBtn();
+  
+  // Mark template as registered when uploaded
+  if (type === 'daily_template' && files.length > 0) {
+    markTemplateRegistered('daily');
+  }
+  if (type === 'billing_template' && files.length > 0) {
+    markTemplateRegistered('billing');
+  }
+  renderTemplateStatusUI();
 }
 
 function removeFile(type, index) {
@@ -284,6 +298,7 @@ function removeFile(type, index) {
   renderFileList(type);
   updateSummary();
   updateAiReadBtn();
+  renderTemplateStatusUI();
 }
 
 function renderFileList(type) {
@@ -319,8 +334,8 @@ function updateSummary() {
   const hasLukumi = state.files.lukumi.length > 0;
   const scheduleCount = state.files.schedule.length;
   const photoCount = state.files.photo.length;
-  const hasDaily = state.files.daily_template.length > 0;
-  const hasBilling = state.files.billing_template.length > 0;
+  const hasDaily = state.files.daily_template.length > 0 || state.templateRegistered.daily;
+  const hasBilling = state.files.billing_template.length > 0 || state.templateRegistered.billing;
 
   if (hasLukumi || scheduleCount > 0 || photoCount > 0) {
     summary.classList.remove('hidden');
@@ -388,6 +403,100 @@ function confirmAiRead() {
   // Placeholder: In the future, this would convert AI-read data into schedule files
   alert('AI読み取り結果の確定機能は近日実装予定です。\n現在はExcel予定表をご利用ください。');
   cancelAiRead();
+}
+
+// ═══════════════════════════════════════════
+// TEMPLATE REGISTRATION STATE (localStorage)
+// ═══════════════════════════════════════════
+
+const TEMPLATE_STORAGE_KEY = 'ayukko_template_status';
+
+function loadTemplateStatus() {
+  try {
+    const saved = localStorage.getItem(TEMPLATE_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      state.templateRegistered.daily = !!parsed.daily;
+      state.templateRegistered.billing = !!parsed.billing;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function saveTemplateStatus() {
+  try {
+    localStorage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(state.templateRegistered));
+  } catch (e) { /* ignore */ }
+}
+
+function markTemplateRegistered(type) {
+  // type: 'daily' or 'billing'
+  if (type === 'daily_template' || type === 'daily') {
+    state.templateRegistered.daily = true;
+  } else if (type === 'billing_template' || type === 'billing') {
+    state.templateRegistered.billing = true;
+  }
+  saveTemplateStatus();
+  renderTemplateStatusUI();
+}
+
+function renderTemplateStatusUI() {
+  // Update the status bar
+  const bar = document.getElementById('template-status-bar');
+  if (bar) {
+    const dailyStatus = state.templateRegistered.daily || state.files.daily_template.length > 0;
+    const billingStatus = state.templateRegistered.billing || state.files.billing_template.length > 0;
+    
+    bar.innerHTML = `
+      <div class="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full ${dailyStatus ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-gray-50 text-gray-500 border border-gray-200'}">
+        <i class="fas ${dailyStatus ? 'fa-check-circle text-green-500' : 'fa-circle text-gray-300'}"></i>
+        日報テンプレ: ${dailyStatus ? (state.files.daily_template.length > 0 ? '今回アップロード済み' : '登録済み（前回のを使用）') : '未登録'}
+      </div>
+      <div class="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full ${billingStatus ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-gray-50 text-gray-500 border border-gray-200'}">
+        <i class="fas ${billingStatus ? 'fa-check-circle text-green-500' : 'fa-circle text-gray-300'}"></i>
+        明細テンプレ: ${billingStatus ? (state.files.billing_template.length > 0 ? '今回アップロード済み' : '登録済み（前回のを使用）') : '未登録'}
+      </div>
+      ${!dailyStatus && !billingStatus ? `
+        <div class="flex items-center gap-1 text-xs text-amber-600">
+          <i class="fas fa-info-circle"></i>
+          ダッシュボード表示だけなら不要です
+        </div>
+      ` : ''}
+    `;
+  }
+
+  // Update labels
+  const dailyLabel = document.getElementById('daily-template-status-label');
+  const billingLabel = document.getElementById('billing-template-status-label');
+  
+  if (dailyLabel) {
+    const hasDailyFile = state.files.daily_template.length > 0;
+    const dailyReg = state.templateRegistered.daily;
+    if (hasDailyFile) {
+      dailyLabel.textContent = '(今回アップロード済み)';
+      dailyLabel.className = 'text-xs text-green-600 ml-1';
+    } else if (dailyReg) {
+      dailyLabel.textContent = '(登録済み — 前回のを使用)';
+      dailyLabel.className = 'text-xs text-green-600 ml-1';
+    } else {
+      dailyLabel.textContent = '(未登録)';
+      dailyLabel.className = 'text-xs text-amber-600 ml-1';
+    }
+  }
+  
+  if (billingLabel) {
+    const hasBillingFile = state.files.billing_template.length > 0;
+    const billingReg = state.templateRegistered.billing;
+    if (hasBillingFile) {
+      billingLabel.textContent = '(今回アップロード済み)';
+      billingLabel.className = 'text-xs text-green-600 ml-1';
+    } else if (billingReg) {
+      billingLabel.textContent = '(登録済み — 前回のを使用)';
+      billingLabel.className = 'text-xs text-green-600 ml-1';
+    } else {
+      billingLabel.textContent = '(未登録)';
+      billingLabel.className = 'text-xs text-amber-600 ml-1';
+    }
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -1029,6 +1138,10 @@ function showSuccessResult(blob, year, month, warningsCount, childrenCount, meta
 
   document.getElementById('btn-download-zip').style.display = '';
 
+  // Mark templates as registered on successful generation
+  if (state.files.daily_template.length > 0) markTemplateRegistered('daily');
+  if (state.files.billing_template.length > 0) markTemplateRegistered('billing');
+
   if (subReport) {
     document.getElementById('result-submission').innerHTML = _renderSubmissionPanel(subReport);
   } else {
@@ -1424,6 +1537,10 @@ function _shortTime(timeStr) {
 // ═══════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Load template registration status from localStorage
+  loadTemplateStatus();
+  renderTemplateStatusUI();
+
   // Health check
   fetch('/api/health').then(r => r.json()).then(data => {
     if (data) {
