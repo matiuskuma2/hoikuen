@@ -1,5 +1,7 @@
 /**
  * Template & Pricing API Routes
+ *
+ * v1.1: JSON parse try-catch, safe error responses
  */
 
 import { Hono } from 'hono';
@@ -84,9 +86,19 @@ templateRoutes.get('/pricing', async (c) => {
 templateRoutes.post('/pricing', async (c) => {
   const db = c.env.DB;
   const nurseryId = 'ayukko_001';
-  const body = await c.req.json();
 
-  const { fiscal_year, rules } = body;
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'リクエストのJSONが不正です' }, 400);
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ error: 'リクエストボディはオブジェクトである必要があります' }, 400);
+  }
+
+  const { fiscal_year, rules } = body as { fiscal_year?: number; rules?: unknown };
   if (!fiscal_year || !rules) {
     return c.json({ error: '年度と料金ルールが必要です' }, 400);
   }

@@ -34,7 +34,7 @@ import traceback
 import calendar
 from datetime import datetime
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -49,7 +49,11 @@ from writers.billing_writer import write_billing_detail
 from writers.pdf_writer import generate_parent_statements
 from storage import FileStorage
 
-app = FastAPI(title="あゆっこ Generator API", version="3.3")
+# === Constants ===
+VERSION = "3.4"
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB per file
+
+app = FastAPI(title="あゆっこ Generator API", version=VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,11 +67,22 @@ app.add_middleware(
 def health():
     return {
         "status": "ok",
-        "version": "3.3",
+        "version": VERSION,
         "engine": "python-openpyxl",
         "phase": "B-D (parsers+writers+guard)",
         "timestamp": datetime.now().isoformat(),
     }
+
+
+async def _read_upload_safe(upload_file: UploadFile, label: str = "file") -> bytes:
+    """Read upload file content with size check."""
+    content = await upload_file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{label} のサイズが大きすぎます ({len(content) / 1024 / 1024:.1f}MB)。上限: {MAX_UPLOAD_SIZE / 1024 / 1024:.0f}MB"
+        )
+    return content
 
 
 @app.post("/generate")
@@ -104,7 +119,7 @@ async def generate(
             # ═══════════════════════════════════════════
 
             # ── 1-A: Parse Lukumi attendance data (B-1) ──
-            lukumi_bytes = await lukumi_file.read()
+            lukumi_bytes = await _read_upload_safe(lukumi_file, "ルクミーデータ")
             lukumi_path = os.path.join(tmpdir, lukumi_file.filename or "lukumi.xlsx")
             with open(lukumi_path, "wb") as f:
                 f.write(lukumi_bytes)
@@ -117,7 +132,7 @@ async def generate(
             # ── 1-B: Parse schedule plans - multiple files (B-3) ──
             schedule_file_paths = []
             for sf in schedule_files:
-                sf_bytes = await sf.read()
+                sf_bytes = await _read_upload_safe(sf, f"予定表({sf.filename})")
                 sf_path = os.path.join(tmpdir, sf.filename or f"schedule_{len(schedule_file_paths)}.xlsx")
                 with open(sf_path, "wb") as f:
                     f.write(sf_bytes)
@@ -132,7 +147,7 @@ async def generate(
             roster_children = []
             tmpl_path = None
             if daily_report_template:
-                tmpl_bytes = await daily_report_template.read()
+                tmpl_bytes = await _read_upload_safe(daily_report_template, "日報テンプレート")
                 tmpl_path = os.path.join(tmpdir, daily_report_template.filename or "template.xlsx")
                 with open(tmpl_path, "wb") as f:
                     f.write(tmpl_bytes)
@@ -142,7 +157,7 @@ async def generate(
             # ── 1-D: Save billing template ──
             billing_tmpl_path = None
             if billing_template:
-                billing_bytes = await billing_template.read()
+                billing_bytes = await _read_upload_safe(billing_template, "明細テンプレート")
                 billing_tmpl_path = os.path.join(tmpdir, billing_template.filename or "billing_template.xlsx")
                 with open(billing_tmpl_path, "wb") as f:
                     f.write(billing_bytes)
@@ -301,7 +316,7 @@ async def generate(
 
                 meta = {
                     "generated_at": datetime.now().isoformat(),
-                    "version": "3.3",
+                    "version": VERSION,
                     "year": year,
                     "month": month,
                     "stats": stats,
@@ -345,6 +360,26 @@ async def generate(
                 }
             )
 
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (like 413) as-is
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": f"データ形式エラー: {str(e)}",
+                "warnings": warnings,
+                "stats": stats,
+            }
+        )
+    except MemoryError:
+        return JSONResponse(
+            status_code=507,
+            content={
+                "error": "メモリ不足: ファイルが大きすぎます。ファイルサイズを確認してください",
+                "warnings": warnings,
+                "stats": stats,
+            }
+        )
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(
@@ -375,7 +410,7 @@ async def preview(
         with FileStorage() as storage:
             tmpdir = storage.base_dir
             # Parse lukumi
-            lukumi_bytes = await lukumi_file.read()
+            lukumi_bytes = await _read_upload_safe(lukumi_file, "ルクミーデータ")
             lukumi_path = os.path.join(tmpdir, "lukumi.xlsx")
             with open(lukumi_path, "wb") as f:
                 f.write(lukumi_bytes)
@@ -387,7 +422,7 @@ async def preview(
             # Parse schedules
             schedule_file_paths = []
             for sf in schedule_files:
-                sf_bytes = await sf.read()
+                sf_bytes = await _read_upload_safe(sf, f"予定表({sf.filename})")
                 sf_path = os.path.join(tmpdir, sf.filename or f"schedule_{len(schedule_file_paths)}.xlsx")
                 with open(sf_path, "wb") as f:
                     f.write(sf_bytes)
@@ -416,6 +451,8 @@ async def preview(
                 "warnings": warnings,
             }
 
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(
@@ -455,7 +492,7 @@ async def dashboard(
             # Parse schedules
             schedule_file_paths = []
             for sf in schedule_files:
-                sf_bytes = await sf.read()
+                sf_bytes = await _read_upload_safe(sf, f"予定表({sf.filename})")
                 sf_path = os.path.join(tmpdir, sf.filename or f"schedule_{len(schedule_file_paths)}.xlsx")
                 with open(sf_path, "wb") as f:
                     f.write(sf_bytes)
@@ -571,6 +608,8 @@ async def dashboard(
                 "warnings": warnings,
             }
 
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(

@@ -1,19 +1,66 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v4.3
+ * あゆっこ業務自動化 — Frontend Application v4.4
  * 
  * Architecture: UI → Hono proxy → Python Generator
  * 
- * v4.3: テンプレート登録UX改善
- *   - テンプレートを「初回登録」セクションに分離
- *   - localStorage でテンプレ登録状態を管理
- *   - 「登録済み（前回のを使用）」 / 「未登録」表示
- *   - 木村さん向け説明文: 日報テンプレとは？
- * 
+ * v4.4: コード品質改善 (QAチェックリスト対応)
+ *   - XSS脆弱性修正: innerHTML → textContent/escapeHtml
+ *   - ファイルアップロード バリデーション (サイズ・拡張子)
+ *   - resp.json() try-catch 追加
+ *   - ZIP _meta.json null チェック
+ *   - マジックナンバー定数化
+ *   - _shortTime 境界値対策
+ *
+ * v4.3 (retained): テンプレート登録UX改善, 初回登録セクション分離, localStorage状態管理
  * v4.2 (retained): 今日/明日/今週/月間 サブタブ, ZIP説明, AI読み取り, マニュアル
  * v4.1 (retained): Guide card, today summary banner, meal badges, day detail table
  * v4.0 (retained): Tab nav, calendar grid, day-click detail, generation
  * v3.3 (retained): _meta.json, 3-category output, warnings, submission
  */
+
+// ═══════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════
+
+const VIEWS = Object.freeze({
+  TODAY: 'today',
+  TOMORROW: 'tomorrow',
+  WEEK: 'week',
+  MONTH: 'month',
+});
+
+const TABS = Object.freeze({
+  DASHBOARD: 'dashboard',
+  UPLOAD: 'upload',
+  GENERATE: 'generate',
+});
+
+/** File validation rules per category */
+const FILE_RULES = Object.freeze({
+  lukumi:           { extensions: ['.xlsx', '.csv'],           maxSizeMB: 50, maxFiles: 1 },
+  schedule:         { extensions: ['.xlsx'],                   maxSizeMB: 50, maxFiles: 50 },
+  daily_template:   { extensions: ['.xlsx'],                   maxSizeMB: 50, maxFiles: 1 },
+  billing_template: { extensions: ['.xlsx'],                   maxSizeMB: 50, maxFiles: 1 },
+  photo:            { extensions: ['.pdf','.jpg','.jpeg','.png','.heic'], maxSizeMB: 100, maxFiles: 20 },
+});
+
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB default
+
+// ═══════════════════════════════════════════
+// HELPERS — HTML ESCAPE (XSS protection)
+// ═══════════════════════════════════════════
+
+/** Escape HTML special characters to prevent XSS */
+function escapeHtml(str) {
+  if (str == null) return '';
+  const s = String(str);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 // ═══════════════════════════════════════════
 // STATE
@@ -35,8 +82,8 @@ const state = {
   dashboardData: null,
   dashboardLoading: false,
   selectedDay: null,
-  activeTab: 'dashboard',
-  dashView: 'today', // 'today' | 'tomorrow' | 'week' | 'month'
+  activeTab: TABS.DASHBOARD,
+  dashView: VIEWS.TODAY, // VIEWS.TODAY | VIEWS.TOMORROW | VIEWS.WEEK | VIEWS.MONTH
   // Template registration state (persisted in localStorage)
   templateRegistered: {
     daily: false,
@@ -210,7 +257,7 @@ function renderScopedDays(data, targetDays, view) {
         : '';
       return `
         <tr class="${rowBg} border-b border-gray-100 last:border-0">
-          <td class="px-3 py-2"><span class="font-medium text-gray-800">${c.name}</span>${enrollBadge}</td>
+          <td class="px-3 py-2"><span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}</td>
           <td class="px-3 py-2 text-center text-gray-600 font-mono whitespace-nowrap">${timeStr}</td>
           <td class="px-2 py-2 text-center">${lunchMark}</td>
           <td class="px-2 py-2 text-center">${snackMark}</td>
@@ -274,10 +321,40 @@ function handleFileSelect(e, type) {
 }
 
 function addFiles(files, type) {
-  if (type === 'lukumi' || type === 'daily_template' || type === 'billing_template') {
-    state.files[type] = files.slice(0, 1);
+  const rules = FILE_RULES[type];
+  if (!rules) return;
+
+  // Validate each file
+  const validFiles = [];
+  const maxBytes = (rules.maxSizeMB || 50) * 1024 * 1024;
+
+  for (const f of files) {
+    // Extension check
+    const ext = '.' + f.name.split('.').pop().toLowerCase();
+    if (!rules.extensions.includes(ext)) {
+      alert(`「${f.name}」は対応していない形式です。\n対応形式: ${rules.extensions.join(', ')}`);
+      continue;
+    }
+    // Size check
+    if (f.size > maxBytes) {
+      alert(`「${f.name}」のサイズが大きすぎます (${formatFileSize(f.size)})。\n上限: ${rules.maxSizeMB}MB`);
+      continue;
+    }
+    validFiles.push(f);
+  }
+
+  if (validFiles.length === 0) return;
+
+  if (rules.maxFiles === 1) {
+    state.files[type] = validFiles.slice(0, 1);
   } else {
-    state.files[type] = [...state.files[type], ...files];
+    const combined = [...state.files[type], ...validFiles];
+    if (combined.length > rules.maxFiles) {
+      alert(`ファイル数が上限を超えています (最大${rules.maxFiles}件)`);
+      state.files[type] = combined.slice(0, rules.maxFiles);
+    } else {
+      state.files[type] = combined;
+    }
   }
   renderFileList(type);
   updateSummary();
@@ -318,10 +395,10 @@ function renderFileList(type) {
     <div class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
       <div class="flex items-center gap-2 min-w-0">
         <i class="fas ${icon} text-xs flex-shrink-0"></i>
-        <span class="text-xs text-gray-700 truncate">${f.name}</span>
+        <span class="text-xs text-gray-700 truncate">${escapeHtml(f.name)}</span>
         <span class="text-xs text-gray-400">(${formatFileSize(f.size)})</span>
       </div>
-      <button onclick="removeFile('${type}', ${i})" class="text-gray-400 hover:text-red-500 ml-2 flex-shrink-0">
+      <button onclick="removeFile('${escapeHtml(type)}', ${i})" class="text-gray-400 hover:text-red-500 ml-2 flex-shrink-0">
         <i class="fas fa-times text-xs"></i>
       </button>
     </div>
@@ -376,7 +453,7 @@ function startAiRead() {
 
   previewDiv.classList.remove('hidden');
 
-  const fileNames = state.files.photo.map(f => f.name).join('、');
+  const fileNames = state.files.photo.map(f => escapeHtml(f.name)).join('、');
   resultDiv.innerHTML = `
     <div class="text-center py-6">
       <i class="fas fa-robot text-purple-400 text-3xl mb-3"></i>
@@ -547,16 +624,26 @@ async function loadDashboard() {
     });
 
     if (!response.ok) {
-      const err = await response.json();
+      let err;
+      try {
+        err = await response.json();
+      } catch {
+        err = { error: `HTTP ${response.status}: ${response.statusText}` };
+      }
       throw new Error(err.error || `HTTP ${response.status}`);
     }
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error('サーバーからの応答を解析できませんでした');
+    }
     state.dashboardData = data;
     state.selectedDay = null;
 
     // Switch to dashboard tab and render
-    switchTab('dashboard');
+    switchTab(TABS.DASHBOARD);
     renderDashboard(data);
 
   } catch (error) {
@@ -617,11 +704,11 @@ function renderDashboard(data) {
         <div class="text-sm">
           ${notSub.length > 0 ? `
             <span class="text-orange-700 font-medium">予定表未提出: </span>
-            <span class="text-orange-600">${notSub.map(n => n.name).join('、')}</span>
+            <span class="text-orange-600">${notSub.map(n => escapeHtml(n.name)).join('、')}</span>
           ` : ''}
           ${unmatched.length > 0 ? `
             <span class="text-red-700 font-medium ml-2">突合不能: </span>
-            <span class="text-red-600">${unmatched.map(u => u.schedule_name).join('、')}</span>
+            <span class="text-red-600">${unmatched.map(u => escapeHtml(u.schedule_name)).join('、')}</span>
           ` : ''}
         </div>
       </div>
@@ -762,7 +849,7 @@ function renderCalendarGrid(data) {
     let childPreview = '';
     if (ds.children && ds.children.length > 0) {
       const preview = ds.children.slice(0, 2).map(c => {
-        const surname = c.name.split(/[\s\u3000]/)[0];
+        const surname = escapeHtml(c.name.split(/[\s\u3000]/)[0]);
         const tStart = _shortTime(c.actual_checkin || c.planned_start);
         const tEnd = _shortTime(c.actual_checkout || c.planned_end);
         return `${surname} ${tStart}-${tEnd}`;
@@ -939,7 +1026,7 @@ function renderDayDetail(day, ds) {
       <tr class="${rowBg} border-b border-gray-100 last:border-0">
         <td class="px-2 py-1.5">
           <div class="flex items-center">
-            <span class="font-medium text-gray-800">${c.name}</span>${enrollBadge}
+            <span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}
           </div>
         </td>
         <td class="px-2 py-1.5 text-center text-gray-600 font-mono whitespace-nowrap">${timeStr}</td>
@@ -969,7 +1056,7 @@ function renderDayDetail(day, ds) {
               : '実績なし';
             return `
               <div class="bg-gray-50 rounded px-2 py-1 text-[10px]">
-                <span class="font-medium text-gray-700">${c.name}</span>
+                <span class="font-medium text-gray-700">${escapeHtml(c.name)}</span>
                 <span class="text-gray-400 mx-1">|</span>
                 <span class="text-blue-600">${planned}</span>
                 <span class="text-gray-400 mx-1">→</span>
@@ -1043,7 +1130,12 @@ async function startGeneration() {
     updateProgress(70, 'レスポンスを受信中...');
 
     if (response.status === 422) {
-      const errorData = await response.json();
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch {
+        errorData = { error: 'テンプレート破損検出（詳細取得失敗）' };
+      }
       updateProgress(0, 'テンプレート破損検出 — 処理中止');
       showFatalResult(errorData);
       return;
@@ -1072,17 +1164,28 @@ async function startGeneration() {
       if (metaFile) {
         const metaText = await metaFile.async('text');
         meta = JSON.parse(metaText);
+      } else {
+        console.warn('_meta.json not found in ZIP — falling back to response header');
       }
     } catch (e) {
-      console.warn('Failed to extract _meta.json:', e);
+      console.warn('Failed to extract _meta.json from ZIP:', e);
+    }
+
+    // Fallback: read meta from response header if ZIP extraction failed
+    if (!meta) {
       try {
         const metaStr = response.headers.get('X-Meta-Json');
         if (metaStr) meta = JSON.parse(metaStr);
-      } catch (e2) { /* ignore */ }
+      } catch (e2) {
+        console.warn('Failed to parse X-Meta-Json header:', e2);
+      }
     }
 
-    const warnings = meta?.warnings || [];
-    const stats = meta?.stats || {};
+    // Ensure meta is at least an empty object for safe access
+    if (!meta) meta = {};
+
+    const warnings = meta.warnings || [];
+    const stats = meta.stats || {};
     const childrenCount = stats.children_processed || parseInt(response.headers.get('X-Children-Processed') || '0');
     const warningsCount = warnings.length;
 
@@ -1263,8 +1366,8 @@ function _renderSubmissionPanel(report) {
         <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
           ${not_submitted.map(ns => `
             <div class="bg-orange-50 px-3 py-2 rounded-lg text-xs border border-orange-100">
-              <div class="font-medium text-orange-800">${ns.name}</div>
-              <div class="text-orange-500 mt-0.5">${ns.reason || ''}</div>
+              <div class="font-medium text-orange-800">${escapeHtml(ns.name)}</div>
+              <div class="text-orange-500 mt-0.5">${escapeHtml(ns.reason || '')}</div>
             </div>
           `).join('')}
         </div>
@@ -1281,8 +1384,8 @@ function _renderSubmissionPanel(report) {
         <div class="space-y-1.5">
           ${unmatched_schedules.map(us => `
             <div class="bg-red-50 px-3 py-2 rounded-lg text-xs border border-red-100">
-              <span class="font-medium text-red-800">${us.schedule_name}</span>
-              <span class="text-red-500 ml-1">— ${us.reason}</span>
+              <span class="font-medium text-red-800">${escapeHtml(us.schedule_name)}</span>
+              <span class="text-red-500 ml-1">— ${escapeHtml(us.reason)}</span>
             </div>
           `).join('')}
         </div>
@@ -1299,7 +1402,7 @@ function _renderSubmissionPanel(report) {
         </summary>
         <div class="grid grid-cols-3 md:grid-cols-4 gap-1.5">
           ${submitted.map(s => `
-            <div class="bg-green-50 px-2.5 py-1.5 rounded text-xs text-green-700 border border-green-100">${s.name}</div>
+            <div class="bg-green-50 px-2.5 py-1.5 rounded text-xs text-green-700 border border-green-100">${escapeHtml(s.name)}</div>
           `).join('')}
         </div>
       </details>
@@ -1367,10 +1470,10 @@ function _renderWarningItem(w, color) {
   return `
     <div class="bg-white rounded-lg px-3 py-2 border border-${color}-100">
       <div class="flex items-start gap-2">
-        ${w.child_name ? `<span class="text-xs font-medium text-${color}-800 bg-${color}-100 px-1.5 py-0.5 rounded whitespace-nowrap">${w.child_name}</span>` : ''}
-        <div class="text-xs text-${color}-700 flex-1">${w.message}</div>
+        ${w.child_name ? `<span class="text-xs font-medium text-${color}-800 bg-${color}-100 px-1.5 py-0.5 rounded whitespace-nowrap">${escapeHtml(w.child_name)}</span>` : ''}
+        <div class="text-xs text-${color}-700 flex-1">${escapeHtml(w.message)}</div>
       </div>
-      ${w.suggestion ? `<div class="text-xs text-${color}-500 mt-1 ml-1"><i class="fas fa-lightbulb mr-1"></i>${w.suggestion}</div>` : ''}
+      ${w.suggestion ? `<div class="text-xs text-${color}-500 mt-1 ml-1"><i class="fas fa-lightbulb mr-1"></i>${escapeHtml(w.suggestion)}</div>` : ''}
     </div>
   `;
 }
@@ -1393,7 +1496,7 @@ function showFatalResult(errorData) {
         </div>
       </div>
       <div class="bg-white rounded-lg p-4 border border-red-200 mt-3">
-        <p class="text-sm text-red-700 font-medium">${errorData.error || '不明なエラー'}</p>
+        <p class="text-sm text-red-700 font-medium">${escapeHtml(errorData.error || '不明なエラー')}</p>
         <div class="mt-3 bg-red-50 rounded p-3">
           <p class="text-xs text-red-600">
             <i class="fas fa-info-circle mr-1"></i>
@@ -1433,18 +1536,18 @@ function showErrorResult(errorData) {
         </div>
         <div>
           <h4 class="font-semibold text-red-800">生成に失敗しました</h4>
-          <p class="text-sm text-red-700 mt-1">${errorData.error || '不明なエラー'}</p>
+          <p class="text-sm text-red-700 mt-1">${escapeHtml(errorData.error || '不明なエラー')}</p>
         </div>
       </div>
       ${errorData.suggestion ? `
         <div class="bg-white rounded-lg p-3 border border-red-100 mt-2">
-          <p class="text-xs text-red-600"><i class="fas fa-lightbulb mr-1"></i>${errorData.suggestion}</p>
+          <p class="text-xs text-red-600"><i class="fas fa-lightbulb mr-1"></i>${escapeHtml(errorData.suggestion)}</p>
         </div>
       ` : ''}
       ${errorData.traceback ? `
         <details class="mt-3">
           <summary class="text-xs text-red-500 cursor-pointer">技術詳細を表示</summary>
-          <pre class="text-xs text-red-400 bg-red-900/10 rounded p-2 mt-1 overflow-x-auto max-h-40">${errorData.traceback}</pre>
+          <pre class="text-xs text-red-400 bg-red-900/10 rounded p-2 mt-1 overflow-x-auto max-h-40">${escapeHtml(errorData.traceback)}</pre>
         </details>
       ` : ''}
     </div>
@@ -1484,7 +1587,7 @@ function resetAll() {
   state.dashboardData = null;
   state.dashboardLoading = false;
   state.selectedDay = null;
-  state.dashView = 'today';
+  state.dashView = VIEWS.TODAY;
 
   ['lukumi', 'schedule', 'daily_template', 'billing_template', 'photo'].forEach(type => {
     renderFileList(type);
@@ -1511,7 +1614,7 @@ function resetAll() {
   document.getElementById('step-result').classList.add('hidden');
   document.getElementById('generate-empty').classList.remove('hidden');
 
-  switchTab('dashboard');
+  switchTab(TABS.DASHBOARD);
 }
 
 // ═══════════════════════════════════════════
@@ -1524,12 +1627,14 @@ function formatFileSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-/** Format time string "HH:MM" -> "H:MM" (remove leading zero) */
+/** Format time string "HH:MM" or "HH:MM:SS" -> "H:MM" (remove leading zero) */
 function _shortTime(timeStr) {
-  if (!timeStr) return '';
-  const m = String(timeStr).match(/^0?(\d{1,2}):(\d{2})/);
+  if (!timeStr || typeof timeStr !== 'string') return '';
+  const s = timeStr.trim();
+  if (s.length < 4) return s; // too short to be a time
+  const m = s.match(/^0?(\d{1,2}):(\d{2})/);
   if (m) return `${parseInt(m[1])}:${m[2]}`;
-  return timeStr;
+  return s;
 }
 
 // ═══════════════════════════════════════════
@@ -1560,5 +1665,5 @@ document.addEventListener('DOMContentLoaded', () => {
   if (monthSel) monthSel.value = String(now.getMonth() + 1);
 
   // Start on dashboard tab
-  switchTab('dashboard');
+  switchTab(TABS.DASHBOARD);
 });

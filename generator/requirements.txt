@@ -1,0 +1,8 @@
+# あゆっこ Generator API — Python Dependencies
+# Pin exact versions for reproducibility
+
+fastapi==0.129.0
+uvicorn==0.40.0
+openpyxl==3.1.5
+reportlab==4.4.5
+python-multipart>=0.0.6   # Required by FastAPI for file uploads

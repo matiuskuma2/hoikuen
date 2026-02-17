@@ -2,6 +2,8 @@
  * Children API Routes
  * GET  /api/children      - List all children
  * PUT  /api/children/:id  - Update child info
+ *
+ * v1.1: JSON parse try-catch, safe error responses
  */
 
 import { Hono } from 'hono';
@@ -29,7 +31,18 @@ childRoutes.get('/', async (c) => {
 // Update child info
 childRoutes.put('/:id', async (c) => {
   const childId = c.req.param('id');
-  const body = await c.req.json();
+
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'リクエストのJSONが不正です' }, 400);
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ error: 'リクエストボディはオブジェクトである必要があります' }, 400);
+  }
+
   const db = c.env.DB;
 
   const child = await db.prepare('SELECT * FROM children WHERE id = ?').bind(childId).first();

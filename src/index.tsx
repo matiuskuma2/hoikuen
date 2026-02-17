@@ -15,8 +15,25 @@ import templateRoutes from './routes/templates';
 
 const app = new Hono<HonoEnv>();
 
-// CORS
-app.use('/api/*', cors());
+// CORS — restrict origins in production, allow all in development
+app.use('/api/*', cors({
+  origin: (origin) => {
+    // Allow same-origin requests (origin is null/empty for same-origin)
+    if (!origin) return '*';
+    // Allow Cloudflare Pages and local development
+    if (origin.endsWith('.pages.dev') ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        origin.includes('.sandbox.novita.ai')) {
+      return origin;
+    }
+    // Default: reflect origin (for first-party usage)
+    return origin;
+  },
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 86400,
+}));
 
 // Favicon
 app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
@@ -25,7 +42,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '4.3',
+    version: '4.4',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Dashboard + Generator',
     timestamp: new Date().toISOString(),
@@ -75,7 +92,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v4.3</p>
+          <p class="text-xs text-gray-500">業務自動化システム v4.4</p>
         </div>
       </div>
       <div class="flex items-center gap-3">

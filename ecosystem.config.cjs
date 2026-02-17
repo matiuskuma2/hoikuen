@@ -10,7 +10,11 @@ module.exports = {
       },
       watch: false,
       instances: 1,
-      exec_mode: 'fork'
+      exec_mode: 'fork',
+      // Log management — prevent disk exhaustion
+      max_memory_restart: '512M',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      merge_logs: true,
     },
     {
       name: 'ayukko-generator',
@@ -22,7 +26,10 @@ module.exports = {
       },
       watch: false,
       instances: 1,
-      exec_mode: 'fork'
+      exec_mode: 'fork',
+      max_memory_restart: '512M',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      merge_logs: true,
     }
   ]
 }

@@ -1,26 +1,51 @@
 /**
- * Job API Routes — v3.2
+ * Job API Routes — v3.3
  * POST /api/jobs                - Create a new job
  * GET  /api/jobs/:id            - Get job status
  * POST /api/jobs/generate       - Direct generate (proxy to Python Generator)
  * POST /api/jobs/preview        - Quick preview (parse + match check)
  * GET  /api/jobs/:id/result     - Get results
+ *
+ * v3.3: Generator URL 環境変数化, yearバウンダリ, JSON parse安全化, エラーレスポンス統一
  */
 
 import { Hono } from 'hono';
 import type { HonoEnv } from '../types/index';
 
-const GENERATOR_URL = 'http://127.0.0.1:8787';
+// Generator URL: configurable via environment variable, fallback to local
+const DEFAULT_GENERATOR_URL = 'http://127.0.0.1:8787';
+
+function getGeneratorUrl(env?: Record<string, unknown>): string {
+  return (env as any)?.GENERATOR_URL || DEFAULT_GENERATOR_URL;
+}
+
+/** Standardized error response helper */
+function errorJson(c: any, status: number, error: string, detail?: string, suggestion?: string) {
+  return c.json({
+    error,
+    ...(detail && { detail }),
+    ...(suggestion && { suggestion }),
+  }, status);
+}
 
 const jobRoutes = new Hono<HonoEnv>();
 
 // Create a new job
 jobRoutes.post('/', async (c) => {
-  const body = await c.req.json<{ year: number; month: number }>();
-  const { year, month } = body;
+  let body: { year: number; month: number };
+  try {
+    body = await c.req.json<{ year: number; month: number }>();
+  } catch {
+    return errorJson(c, 400, 'リクエストのJSONが不正です');
+  }
+  const year = Number(body.year);
+  const month = Number(body.month);
 
-  if (!year || !month || month < 1 || month > 12) {
-    return c.json({ error: '年月を正しく指定してください' }, 400);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    return errorJson(c, 400, '年を正しく指定してください (2000-2100)');
+  }
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    return errorJson(c, 400, '月を正しく指定してください (1-12)');
   }
 
   const db = c.env.DB;
@@ -40,12 +65,13 @@ jobRoutes.get('/:id', async (c) => {
   const jobId = c.req.param('id');
   const db = c.env.DB;
   const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').bind(jobId).first();
-  if (!job) return c.json({ error: 'ジョブが見つかりません' }, 404);
+  if (!job) return errorJson(c, 404, 'ジョブが見つかりません');
   return c.json(job);
 });
 
 // Dashboard endpoint (proxy to Python Generator)
 jobRoutes.post('/dashboard', async (c) => {
+  const generatorUrl = getGeneratorUrl(c.env);
   try {
     const formData = await c.req.formData();
     const pyFormData = new FormData();
@@ -58,21 +84,33 @@ jobRoutes.post('/dashboard', async (c) => {
       }
     }
 
-    const response = await fetch(`${GENERATOR_URL}/dashboard`, {
+    const response = await fetch(`${generatorUrl}/dashboard`, {
       method: 'POST',
       body: pyFormData,
     });
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      return errorJson(c, 502, 'Generatorからのレスポンスを解析できませんでした',
+        undefined, 'Python Generatorが正常に動作しているか確認してください (port 8787)');
+    }
     return c.json(data, response.status);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    return c.json({ error: `Dashboard接続エラー: ${message}` }, 502);
+    const isConnectionRefused = message.includes('ECONNREFUSED') || message.includes('fetch failed');
+    return errorJson(c, 502, `Dashboard接続エラー: ${message}`,
+      undefined,
+      isConnectionRefused
+        ? 'Python Generator APIが起動していない可能性があります (port 8787)'
+        : 'ネットワーク接続を確認してください');
   }
 });
 
 // Proxy generate request to Python Generator
 jobRoutes.post('/generate', async (c) => {
+  const generatorUrl = getGeneratorUrl(c.env);
   try {
     const formData = await c.req.formData();
     const pyFormData = new FormData();
@@ -85,14 +123,19 @@ jobRoutes.post('/generate', async (c) => {
       }
     }
 
-    const response = await fetch(`${GENERATOR_URL}/generate`, {
+    const response = await fetch(`${generatorUrl}/generate`, {
       method: 'POST',
       body: pyFormData,
     });
 
     // Handle fatal corruption (422)
     if (response.status === 422) {
-      const errorData = await response.json() as Record<string, unknown>;
+      let errorData: Record<string, unknown>;
+      try {
+        errorData = await response.json() as Record<string, unknown>;
+      } catch {
+        errorData = { error: 'テンプレート破損検出（詳細取得失敗）' };
+      }
       return c.json({
         error: errorData.error || 'テンプレート破損検出',
         fatal: true,
@@ -103,7 +146,12 @@ jobRoutes.post('/generate', async (c) => {
     }
 
     if (!response.ok) {
-      const errorData = await response.json() as Record<string, unknown>;
+      let errorData: Record<string, unknown>;
+      try {
+        errorData = await response.json() as Record<string, unknown>;
+      } catch {
+        errorData = { error: `Generatorエラー (HTTP ${response.status})` };
+      }
       return c.json({
         error: errorData.error || 'Generation failed',
         warnings: errorData.warnings || [],
@@ -129,15 +177,18 @@ jobRoutes.post('/generate', async (c) => {
 
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    return c.json({
-      error: `Generator接続エラー: ${message}`,
-      suggestion: 'Python Generator APIが起動しているか確認してください (port 8787)',
-    }, 502);
+    const isConnectionRefused = message.includes('ECONNREFUSED') || message.includes('fetch failed');
+    return errorJson(c, 502, `Generator接続エラー: ${message}`,
+      undefined,
+      isConnectionRefused
+        ? 'Python Generator APIが起動しているか確認してください (port 8787)'
+        : 'ネットワーク接続を確認してください');
   }
 });
 
 // Preview endpoint (quick parse + matching check, no generation)
 jobRoutes.post('/preview', async (c) => {
+  const generatorUrl = getGeneratorUrl(c.env);
   try {
     const formData = await c.req.formData();
     const pyFormData = new FormData();
@@ -146,16 +197,22 @@ jobRoutes.post('/preview', async (c) => {
       pyFormData.append(key, value instanceof File ? value : value);
     }
 
-    const response = await fetch(`${GENERATOR_URL}/preview`, {
+    const response = await fetch(`${generatorUrl}/preview`, {
       method: 'POST',
       body: pyFormData,
     });
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      return errorJson(c, 502, 'Generatorからのレスポンスを解析できませんでした',
+        undefined, 'Python Generatorが正常に動作しているか確認してください (port 8787)');
+    }
     return c.json(data, response.status);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    return c.json({ error: `Preview接続エラー: ${message}` }, 502);
+    return errorJson(c, 502, `Preview接続エラー: ${message}`);
   }
 });
 
@@ -165,7 +222,7 @@ jobRoutes.get('/:id/result', async (c) => {
   const db = c.env.DB;
 
   const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').bind(jobId).first();
-  if (!job) return c.json({ error: 'ジョブが見つかりません' }, 404);
+  if (!job) return errorJson(c, 404, 'ジョブが見つかりません');
 
   const outputs = await db.prepare('SELECT * FROM output_files WHERE job_id = ?').bind(jobId).all();
   const warnings = job.warnings_json ? JSON.parse(job.warnings_json as string) : [];
