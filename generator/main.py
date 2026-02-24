@@ -50,7 +50,7 @@ from writers.pdf_writer import generate_parent_statements
 from storage import FileStorage
 
 # === Constants ===
-VERSION = "3.4"
+VERSION = "3.5"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB per file
 
 app = FastAPI(title="あゆっこ Generator API", version=VERSION)
@@ -529,8 +529,11 @@ async def dashboard(
                              and f["attendance_status"] == "absent"
                              and f.get("planned_start")]
 
+                # Combine present + plan-only for full daily view
+                all_day_facts = day_facts + plan_only
+
                 children_detail = []
-                for f in day_facts:
+                for f in all_day_facts:
                     # Find child info to get class_name and detect enrollment_type
                     child_info = next(
                         (c for c in children if c.get("lukumi_id") == f["child_id"]), {}
@@ -573,6 +576,7 @@ async def dashboard(
                     "is_weekend": is_weekend,
                     "total_children": len(day_facts),
                     "planned_absent": len(plan_only),
+                    "total_with_plans": len(all_day_facts),
                     "lunch_count": sum(1 for f in day_facts if f.get("has_lunch")),
                     "am_snack_count": sum(1 for f in day_facts if f.get("has_am_snack")),
                     "pm_snack_count": sum(1 for f in day_facts if f.get("has_pm_snack")),

@@ -1,9 +1,14 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v4.5
+ * あゆっこ業務自動化 — Frontend Application v4.6
  * 
  * Architecture: UI → Hono proxy → Python Generator
  * 
- * v4.5: ダッシュボード大幅強化
+ * v4.6: ダッシュボード完成
+ *   - 予定あり・欠席の園児もカレンダー＆日詳細に表示
+ *   - 欠席園児は薄いグレー＋「欠」マーク、セパレーター表示
+ *   - カレンダーセルに欠席数バッジ追加
+ *
+ * v4.5 (retained): ダッシュボード大幅強化
  *   - カレンダーに登園予定時間を表示
  *   - 食事を4区分に分離（昼食・朝おやつ・午後おやつ・夕食）
  *   - クラス名表示（ルクミーA列のデータ）
@@ -225,7 +230,9 @@ function renderScopedDays(data, targetDays, view) {
     }
 
     const children = dayData.children || [];
-    const sorted = [...children].sort((a, b) => {
+    const presentKids = children.filter(c => c.status !== 'absent');
+    const absentKids = children.filter(c => c.status === 'absent');
+    const sorted = [...presentKids].sort((a, b) => {
       const tA = a.actual_checkin || a.planned_start || '99:99';
       const tB = b.actual_checkin || b.planned_start || '99:99';
       return tA.localeCompare(tB);
@@ -234,6 +241,7 @@ function renderScopedDays(data, targetDays, view) {
     // Summary badges
     const badges = [];
     badges.push(`<span class="bg-blue-100 text-blue-800 px-2.5 py-1 rounded-full text-xs font-bold"><i class="fas fa-child mr-1"></i>${dayData.total_children}名</span>`);
+    if (absentKids.length > 0) badges.push(`<span class="bg-gray-100 text-gray-500 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-user-slash mr-1"></i>${absentKids.length}名欠席</span>`);
     if (dayData.lunch_count > 0) badges.push(`<span class="bg-green-100 text-green-700 px-2 py-1 rounded-full text-xs font-medium">🍱昼食${dayData.lunch_count}</span>`);
     if (dayData.am_snack_count > 0) badges.push(`<span class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full text-xs font-medium">🍪朝${dayData.am_snack_count}</span>`);
     if (dayData.pm_snack_count > 0) badges.push(`<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium">🍪午${dayData.pm_snack_count}</span>`);
@@ -904,12 +912,16 @@ function renderCalendarGrid(data) {
     const selectedClass = isSelected ? 'ring-2 ring-blue-500 bg-blue-50/30' : '';
 
     let countBadge = '';
-    if (hasChildren) {
+    const totalWithPlans = ds.total_with_plans || ds.total_children;
+    if (hasChildren || ds.planned_absent > 0) {
       const n = ds.total_children;
       const badgeColor = n >= 5 ? 'bg-blue-600 text-white' :
                          n >= 3 ? 'bg-blue-500 text-white' :
-                                  'bg-blue-100 text-blue-700';
-      countBadge = `<span class="badge ${badgeColor}">${n}名</span>`;
+                         n > 0  ? 'bg-blue-100 text-blue-700' :
+                                  'bg-gray-200 text-gray-500';
+      const label = n > 0 ? `${n}名` : '';
+      const absentLabel = ds.planned_absent > 0 ? `<span class="text-[9px] text-gray-400">${ds.planned_absent > 0 && n > 0 ? '+' : ''}${ds.planned_absent}欠</span>` : '';
+      countBadge = n > 0 ? `<span class="badge ${badgeColor}">${label}</span>${absentLabel}` : absentLabel;
     }
 
     // Meal badges — 4 categories
@@ -937,15 +949,18 @@ function renderCalendarGrid(data) {
     // Children preview
     let childPreview = '';
     if (ds.children && ds.children.length > 0) {
-      const preview = ds.children.slice(0, 2).map(c => {
+      const preview = ds.children.slice(0, 3).map(c => {
         const surname = escapeHtml(c.name.split(/[\s\u3000]/)[0]);
         // Show planned time, then actual if different
         const tStart = _shortTime(c.planned_start || c.actual_checkin);
         const tEnd = _shortTime(c.planned_end || c.actual_checkout);
         const classTag = c.class_name ? `<span class="text-gray-300">[${escapeHtml(c.class_name)}]</span>` : '';
-        return `${surname} ${tStart}-${tEnd} ${classTag}`;
+        const isAbsent = c.status === 'absent';
+        const absentMark = isAbsent ? '<span class="text-red-300 text-[8px]">欠</span>' : '';
+        const textColor = isAbsent ? 'text-gray-300 line-through' : '';
+        return `<span class="${textColor}">${surname} ${tStart}-${tEnd}</span> ${classTag}${absentMark}`;
       });
-      const more = ds.children.length > 2 ? `<span class="text-gray-400"> +${ds.children.length - 2}</span>` : '';
+      const more = ds.children.length > 3 ? `<span class="text-gray-400"> +${ds.children.length - 3}</span>` : '';
       childPreview = `<div class="text-[10px] text-gray-500 leading-tight mt-0.5">${preview.join('<br>')}${more}</div>`;
     }
 
@@ -1018,7 +1033,10 @@ function renderDayDetail(day, ds) {
   document.getElementById('day-detail-title').innerHTML = `
     <div class="flex items-center justify-between">
       <span>${dateStr}</span>
-      <span class="text-xs font-normal text-gray-500">${ds.total_children}名来園</span>
+      <div class="flex gap-2 text-xs font-normal">
+        <span class="text-blue-600">${ds.total_children}名来園</span>
+        ${ds.planned_absent > 0 ? `<span class="text-gray-400">${ds.planned_absent}名欠席</span>` : ''}
+      </div>
     </div>
   `;
 
@@ -1075,9 +1093,18 @@ function renderDayDetail(day, ds) {
   }
 
   // Children table — with 4 meal columns, class name, and edit toggles
-  const sorted = [...children].sort((a, b) => {
+  // Separate present and absent children
+  const presentChildren = children.filter(c => c.status !== 'absent');
+  const absentChildren = children.filter(c => c.status === 'absent');
+  
+  const sortedPresent = [...presentChildren].sort((a, b) => {
     const tA = a.actual_checkin || a.planned_start || '99:99';
     const tB = b.actual_checkin || b.planned_start || '99:99';
+    return tA.localeCompare(tB);
+  });
+  const sortedAbsent = [...absentChildren].sort((a, b) => {
+    const tA = a.planned_start || '99:99';
+    const tB = b.planned_start || '99:99';
     return tA.localeCompare(tB);
   });
 
@@ -1101,8 +1128,13 @@ function renderDayDetail(day, ds) {
         <tbody>
   `;
 
-  sorted.forEach((c, idx) => {
-    const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70';
+  // Helper function to render a child row
+  function renderChildRow(c, idx, isAbsent) {
+    const rowBg = isAbsent
+      ? 'bg-gray-50/50'
+      : (idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70');
+    const textOpacity = isAbsent ? 'opacity-50' : '';
+    
     // Show planned time + actual time
     const planStart = _shortTime(c.planned_start);
     const planEnd = _shortTime(c.planned_end);
@@ -1115,6 +1147,9 @@ function renderDayDetail(day, ds) {
     }
     if (actStart && actEnd) {
       timeHtml += `<div class="text-green-600">実 ${actStart}-${actEnd}</div>`;
+    }
+    if (isAbsent) {
+      timeHtml += `<div class="text-red-400 text-[9px]">欠席</div>`;
     }
     if (!timeHtml) timeHtml = '-';
 
@@ -1143,6 +1178,7 @@ function renderDayDetail(day, ds) {
       ? `<span class="text-[9px] text-gray-400 block">${escapeHtml(c.class_name)}</span>`
       : '';
     const editBadge = hasEdit ? '<span class="text-[8px] text-blue-500 ml-0.5" title="手動編集あり">✎</span>' : '';
+    const absentBadge = isAbsent ? '<span class="bg-red-50 text-red-400 px-1 py-0.5 rounded text-[8px] ml-1">欠席</span>' : '';
 
     const specialIcons = [];
     if (c.is_early_morning) specialIcons.push('🕒');
@@ -1152,11 +1188,11 @@ function renderDayDetail(day, ds) {
       ? `<span class="text-[9px]">${specialIcons.join('')}</span>`
       : '';
 
-    tableHtml += `
-      <tr class="${rowBg} border-b border-gray-100 last:border-0">
+    return `
+      <tr class="${rowBg} border-b border-gray-100 last:border-0 ${textOpacity}">
         <td class="px-2 py-1.5">
           <div class="flex items-center">
-            <span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}${editBadge}
+            <span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}${absentBadge}${editBadge}
           </div>
           ${classBadge}
           ${specialStr}
@@ -1169,8 +1205,24 @@ function renderDayDetail(day, ds) {
         <td class="px-1 py-1.5 text-center">${sickBtn}</td>
       </tr>
     `;
-  });
+  }
 
+  // Render present children rows
+  let childRows = sortedPresent.map((c, idx) => renderChildRow(c, idx, false)).join('');
+  
+  // Add absent children with separator
+  if (sortedAbsent.length > 0) {
+    childRows += `
+      <tr class="bg-gray-100 border-b border-gray-200">
+        <td colspan="7" class="px-2 py-1 text-[10px] text-gray-500 font-medium">
+          <i class="fas fa-user-slash mr-1 text-gray-400"></i>予定あり・欠席 (${sortedAbsent.length}名)
+        </td>
+      </tr>
+    `;
+    childRows += sortedAbsent.map((c, idx) => renderChildRow(c, idx, true)).join('');
+  }
+
+  tableHtml += childRows;
   tableHtml += '</tbody></table></div>';
 
   // Manual edits notice
