@@ -1,6 +1,6 @@
 """
-児童利用予定表パーサー — v3.1 Phase B-3
-1園児1ファイル、シート"原本" から日別の予定を抽出
+児童利用予定表パーサー — v4.0 Phase B-3+
+1ファイル=複数園児対応（全シート読み込み）
 
 構造:
   B6  = 園児氏名
@@ -8,7 +8,10 @@
   左半分(日1-15): B12:B26=日付, D=登所, G=降所, J=昼食, K=おやつ, L=夕食
   右半分(日16-31): M12:M27=日付, O=登所, R=降所, U=昼食, V=おやつ, W=夕食
 
-強化点 (B-3):
+v4.0 変更:
+  - 1ファイルに複数シートがある場合、全シートを読み込み（1シート=1園児）
+  - シート「原本」が見つかれば優先、なければ全シートを処理
+  - 空シート・非予定シートは自動スキップ
   - 月不一致時に詳細warning（ファイル名+検出月+対象月）
   - 未突合ファイルに理由を添付
   - 園児名検出失敗時のフォールバック（ファイル名から推測）
@@ -24,18 +27,17 @@ from engine.name_matcher import normalize_name
 
 def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
     """
-    Parse a single child's schedule plan Excel file.
+    Parse schedule plan Excel file — supports MULTI-SHEET (1 file = multiple children).
+    Each sheet is treated as one child's schedule.
 
     Returns:
-        (plans, child_name, warnings)
+        (results, warnings)
 
-        plans: dict[int, plan_dict] — day → plan
-        child_name: str | None
+        results: list of (plans_dict, child_name) tuples
         warnings: list[dict]
     """
     warnings = []
-    plans = {}
-    child_name = None
+    results = []  # list of (plans, child_name)
     filename = os.path.basename(file_path)
 
     try:
@@ -48,20 +50,61 @@ def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
             "suggestion": "ファイル形式が正しいか確認してください",
             "file": filename,
         })
-        return plans, child_name, warnings
+        return results, warnings
 
-    # Find sheet "原本" or first sheet
+    # Determine which sheets to process
+    sheets_to_process = []
     if "原本" in wb.sheetnames:
-        ws = wb["原本"]
+        # If "原本" exists, process only that sheet (legacy 1-sheet mode)
+        sheets_to_process = [wb["原本"]]
     else:
-        ws = wb.active
+        # Process ALL sheets — each sheet = 1 child
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            # Skip obviously empty or meta sheets
+            if ws.max_row is not None and ws.max_row < 5:
+                continue
+            sheets_to_process.append(ws)
+
+    if len(sheets_to_process) == 0:
+        warnings.append({
+            "level": "error",
+            "child_name": None,
+            "message": f"「{filename}」: 処理可能なシートがありません",
+            "suggestion": "予定表のシート構成を確認してください",
+            "file": filename,
+        })
+        wb.close()
+        return results, warnings
+
+    if len(sheets_to_process) > 1:
         warnings.append({
             "level": "info",
             "child_name": None,
-            "message": f"「{filename}」にシート「原本」なし。「{ws.title}」を使用",
+            "message": f"「{filename}」: {len(sheets_to_process)}シート検出 → 全シートを読み込みます",
             "suggestion": None,
             "file": filename,
         })
+
+    for ws in sheets_to_process:
+        sheet_label = f"{filename}[{ws.title}]"
+        plans, child_name, sheet_warnings = _parse_single_sheet(
+            ws, filename, sheet_label, target_year, target_month
+        )
+        warnings.extend(sheet_warnings)
+        if child_name:
+            results.append((plans, child_name))
+
+    wb.close()
+    return results, warnings
+
+
+def _parse_single_sheet(ws, filename: str, sheet_label: str,
+                        target_year: int, target_month: int):
+    """Parse a single worksheet as one child's schedule."""
+    warnings = []
+    plans = {}
+    child_name = None
 
     # Read all cells into a dict for random access
     cells = {}
@@ -70,7 +113,9 @@ def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
             if cell.value is not None:
                 cells[(cell.row, cell.column)] = cell.value
 
-    wb.close()
+    # Skip sheets that look empty (fewer than 3 non-empty cells)
+    if len(cells) < 3:
+        return plans, None, []
 
     # ── Extract child name ──
     # Primary: B6 (row 6, col 2)
@@ -86,21 +131,37 @@ def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
                 warnings.append({
                     "level": "info",
                     "child_name": child_name,
-                    "message": f"「{filename}」: B6が空のため{_cell_ref(fallback_pos)}から園児名を検出",
+                    "message": f"「{sheet_label}」: B6が空のため{_cell_ref(fallback_pos)}から園児名を検出",
                     "suggestion": None,
                     "file": filename,
                 })
                 break
 
     if not child_name:
-        # Last resort: extract from filename
+        # Try sheet name as child name (common pattern: sheet name = child name)
+        sheet_name_candidate = ws.title.strip()
+        if sheet_name_candidate and len(sheet_name_candidate) >= 2 and not sheet_name_candidate.startswith("Sheet"):
+            # Exclude common non-name sheet titles
+            skip_titles = {"原本", "設定", "マスタ", "一覧", "集計", "sheet1", "sheet2", "sheet3"}
+            if sheet_name_candidate.lower() not in skip_titles:
+                child_name = normalize_name(sheet_name_candidate)
+                warnings.append({
+                    "level": "warn",
+                    "child_name": child_name,
+                    "message": f"「{sheet_label}」: セルから園児名を検出できず、シート名「{ws.title}」から推測",
+                    "suggestion": "予定表のB6セルに園児名を入力してください",
+                    "file": filename,
+                })
+
+    if not child_name:
+        # Last resort: extract from filename (only for single-sheet files)
         name_from_file = _extract_name_from_filename(filename)
         if name_from_file:
             child_name = name_from_file
             warnings.append({
                 "level": "warn",
                 "child_name": child_name,
-                "message": f"「{filename}」: セルから園児名を検出できず、ファイル名から推測",
+                "message": f"「{sheet_label}」: セルから園児名を検出できず、ファイル名から推測",
                 "suggestion": "予定表のB6セルに園児名を入力してください",
                 "file": filename,
             })
@@ -108,7 +169,7 @@ def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
             warnings.append({
                 "level": "error",
                 "child_name": None,
-                "message": f"「{filename}」: 園児名を検出できません",
+                "message": f"「{sheet_label}」: 園児名を検出できません",
                 "suggestion": "B6セルに園児名が入力されているか確認してください",
                 "file": filename,
             })
@@ -139,7 +200,7 @@ def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
             warnings.append({
                 "level": "warn",
                 "child_name": child_name,
-                "message": f"「{filename}」の年月({file_year}年{file_month}月)が対象月({target_year}年{target_month}月)と不一致",
+                "message": f"「{sheet_label}」の年月({file_year}年{file_month}月)が対象月({target_year}年{target_month}月)と不一致",
                 "suggestion": "正しいファイルか確認してください。このファイルのデータは使用されますが、日付のずれにご注意ください",
                 "file": filename,
             })
@@ -147,7 +208,7 @@ def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
         warnings.append({
             "level": "info",
             "child_name": child_name,
-            "message": f"「{filename}」: 年月セル(J1/M1)が空または読み取れません",
+            "message": f"「{sheet_label}」: 年月セル(J1/M1)が空または読み取れません",
             "suggestion": None,
             "file": filename,
         })
@@ -193,7 +254,7 @@ def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
         warnings.append({
             "level": "warn",
             "child_name": child_name,
-            "message": f"「{filename}」: 有効な利用予定が0件です",
+            "message": f"「{sheet_label}」: 有効な利用予定が0件です",
             "suggestion": "予定表の内容が正しいか確認してください",
             "file": filename,
         })
@@ -208,6 +269,7 @@ def parse_multiple_schedules(
 ) -> tuple[dict[str, dict], list[str], list[dict]]:
     """
     Parse multiple schedule files and aggregate results.
+    Each file may contain multiple sheets (one child per sheet).
 
     Returns:
         (all_plans, child_names, all_warnings)
@@ -221,21 +283,22 @@ def parse_multiple_schedules(
     all_warnings = []
 
     for file_path, orig_name in file_paths:
-        plans, child_name, file_warnings = parse_schedule_plans(file_path, target_year, target_month)
+        results, file_warnings = parse_schedule_plans(file_path, target_year, target_month)
         all_warnings.extend(file_warnings)
 
-        if child_name:
-            child_names.append(child_name)
-            if child_name in all_plans:
-                # Duplicate schedule for same child
-                all_warnings.append({
-                    "level": "warn",
-                    "child_name": child_name,
-                    "message": f"園児「{child_name}」の予定表が複数アップロードされています。後のファイル「{orig_name}」で上書きします",
-                    "suggestion": None,
-                    "file": orig_name,
-                })
-            all_plans[child_name] = plans
+        for plans, child_name in results:
+            if child_name:
+                child_names.append(child_name)
+                if child_name in all_plans:
+                    # Duplicate schedule for same child
+                    all_warnings.append({
+                        "level": "warn",
+                        "child_name": child_name,
+                        "message": f"園児「{child_name}」の予定表が複数アップロードされています。後のデータで上書きします",
+                        "suggestion": None,
+                        "file": orig_name,
+                    })
+                all_plans[child_name] = plans
 
     return all_plans, child_names, all_warnings
 

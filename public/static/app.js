@@ -1,15 +1,17 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v4.4
+ * あゆっこ業務自動化 — Frontend Application v4.5
  * 
  * Architecture: UI → Hono proxy → Python Generator
  * 
- * v4.4: コード品質改善 (QAチェックリスト対応)
- *   - XSS脆弱性修正: innerHTML → textContent/escapeHtml
- *   - ファイルアップロード バリデーション (サイズ・拡張子)
- *   - resp.json() try-catch 追加
- *   - ZIP _meta.json null チェック
- *   - マジックナンバー定数化
- *   - _shortTime 境界値対策
+ * v4.5: ダッシュボード大幅強化
+ *   - カレンダーに登園予定時間を表示
+ *   - 食事を4区分に分離（昼食・朝おやつ・午後おやつ・夕食）
+ *   - クラス名表示（ルクミーA列のデータ）
+ *   - ダッシュボード上で食事・時間の手動編集（キャンセル等）
+ *   - 病児保育の手動入力
+ *   - 編集データはメモリ内保持（生成時に反映）
+ *
+ * v4.4 (retained): コード品質改善 (QAチェックリスト対応)
  *
  * v4.3 (retained): テンプレート登録UX改善, 初回登録セクション分離, localStorage状態管理
  * v4.2 (retained): 今日/明日/今週/月間 サブタブ, ZIP説明, AI読み取り, マニュアル
@@ -84,6 +86,9 @@ const state = {
   selectedDay: null,
   activeTab: TABS.DASHBOARD,
   dashView: VIEWS.TODAY, // VIEWS.TODAY | VIEWS.TOMORROW | VIEWS.WEEK | VIEWS.MONTH
+  // Manual edits overlay (applied on top of dashboardData)
+  // Key: "childId_day" → { has_lunch, has_am_snack, has_pm_snack, has_dinner, is_sick, cancelled }
+  manualEdits: {},
   // Template registration state (persisted in localStorage)
   templateRegistered: {
     daily: false,
@@ -230,8 +235,8 @@ function renderScopedDays(data, targetDays, view) {
     const badges = [];
     badges.push(`<span class="bg-blue-100 text-blue-800 px-2.5 py-1 rounded-full text-xs font-bold"><i class="fas fa-child mr-1"></i>${dayData.total_children}名</span>`);
     if (dayData.lunch_count > 0) badges.push(`<span class="bg-green-100 text-green-700 px-2 py-1 rounded-full text-xs font-medium">🍱昼食${dayData.lunch_count}</span>`);
-    if (dayData.am_snack_count > 0) badges.push(`<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium">🍪AM${dayData.am_snack_count}</span>`);
-    if (dayData.pm_snack_count > 0) badges.push(`<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium">🍪PM${dayData.pm_snack_count}</span>`);
+    if (dayData.am_snack_count > 0) badges.push(`<span class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full text-xs font-medium">🍪朝${dayData.am_snack_count}</span>`);
+    if (dayData.pm_snack_count > 0) badges.push(`<span class="bg-amber-100 text-amber-700 px-2 py-1 rounded-full text-xs font-medium">🍪午${dayData.pm_snack_count}</span>`);
     if (dayData.dinner_count > 0) badges.push(`<span class="bg-orange-100 text-orange-700 px-2 py-1 rounded-full text-xs font-medium">🍽夕食${dayData.dinner_count}</span>`);
     if (dayData.early_morning_count > 0) badges.push(`<span class="bg-orange-100 text-orange-800 px-2 py-1 rounded-full text-xs font-medium">🕒早朝${dayData.early_morning_count}</span>`);
     if (dayData.extension_count > 0) badges.push(`<span class="bg-purple-100 text-purple-800 px-2 py-1 rounded-full text-xs font-medium">🕘延長${dayData.extension_count}</span>`);
@@ -241,26 +246,45 @@ function renderScopedDays(data, targetDays, view) {
     // Table
     let tableRows = sorted.map((c, idx) => {
       const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70';
-      const startTime = _shortTime(c.actual_checkin || c.planned_start);
-      const endTime = _shortTime(c.actual_checkout || c.planned_end);
-      const timeStr = startTime && endTime ? `${startTime}-${endTime}` : '-';
-      const lunchMark = c.has_lunch ? '<span class="text-green-600 font-bold">○</span>' : '';
-      const snackMark = (c.has_am_snack || c.has_pm_snack) ? '<span class="text-amber-600 font-bold">○</span>' : '';
-      const dinnerMark = c.has_dinner ? '<span class="text-orange-600 font-bold">○</span>' : '';
+      // Show both planned and actual times
+      const planStart = _shortTime(c.planned_start);
+      const planEnd = _shortTime(c.planned_end);
+      const actStart = _shortTime(c.actual_checkin);
+      const actEnd = _shortTime(c.actual_checkout);
+      const timeStr = actStart && actEnd ? `${actStart}-${actEnd}` : (planStart && planEnd ? `${planStart}-${planEnd}` : '-');
+      const planStr = planStart && planEnd ? `予${planStart}-${planEnd}` : '';
+      
+      const eLunch = effectiveVal(c, 'has_lunch', day);
+      const eAmSnack = effectiveVal(c, 'has_am_snack', day);
+      const ePmSnack = effectiveVal(c, 'has_pm_snack', day);
+      const eDinner = effectiveVal(c, 'has_dinner', day);
+      const eSick = effectiveVal(c, 'is_sick', day);
+      
+      const lunchMark = eLunch ? '<span class="text-green-600 font-bold">○</span>' : '';
+      const amSnackMark = eAmSnack ? '<span class="text-yellow-600 font-bold">○</span>' : '';
+      const pmSnackMark = ePmSnack ? '<span class="text-amber-600 font-bold">○</span>' : '';
+      const dinnerMark = eDinner ? '<span class="text-orange-600 font-bold">○</span>' : '';
       const specials = [];
       if (c.is_early_morning) specials.push('<span class="text-orange-500" title="早朝">🕒</span>');
       if (c.is_extension) specials.push('<span class="text-purple-500" title="延長">🕘</span>');
       if (c.is_night) specials.push('<span class="text-indigo-500" title="夜間">🌙</span>');
-      if (c.is_sick) specials.push('<span class="text-red-500" title="病児">💊</span>');
+      if (eSick) specials.push('<span class="text-red-500" title="病児">💊</span>');
       const enrollBadge = c.enrollment_type === '一時'
         ? '<span class="bg-yellow-100 text-yellow-700 px-1 py-0.5 rounded text-[9px] font-medium ml-1">一時</span>'
         : '';
+      const classBadge = c.class_name
+        ? `<span class="text-[9px] text-gray-400 ml-1">${escapeHtml(c.class_name)}</span>`
+        : '';
       return `
         <tr class="${rowBg} border-b border-gray-100 last:border-0">
-          <td class="px-3 py-2"><span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}</td>
+          <td class="px-3 py-2">
+            <div><span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}${classBadge}</div>
+            ${planStr ? `<div class="text-[10px] text-blue-400">${planStr}</div>` : ''}
+          </td>
           <td class="px-3 py-2 text-center text-gray-600 font-mono whitespace-nowrap">${timeStr}</td>
           <td class="px-2 py-2 text-center">${lunchMark}</td>
-          <td class="px-2 py-2 text-center">${snackMark}</td>
+          <td class="px-2 py-2 text-center">${amSnackMark}</td>
+          <td class="px-2 py-2 text-center">${pmSnackMark}</td>
           <td class="px-2 py-2 text-center">${dinnerMark}</td>
           <td class="px-2 py-2 text-center">${specials.join('')}</td>
         </tr>
@@ -282,7 +306,8 @@ function renderScopedDays(data, targetDays, view) {
               <th class="px-3 py-2 text-left text-gray-600 font-semibold">園児名</th>
               <th class="px-3 py-2 text-center text-gray-600 font-semibold">時間</th>
               <th class="px-2 py-2 text-center text-gray-400" title="昼食">🍱</th>
-              <th class="px-2 py-2 text-center text-gray-400" title="おやつ">🍪</th>
+              <th class="px-2 py-2 text-center text-gray-400" title="朝おやつ">🍪朝</th>
+              <th class="px-2 py-2 text-center text-gray-400" title="午後おやつ">🍪午</th>
               <th class="px-2 py-2 text-center text-gray-400" title="夕食">🍽</th>
               <th class="px-2 py-2 text-center text-gray-600 font-semibold">区分</th>
             </tr>
@@ -295,6 +320,70 @@ function renderScopedDays(data, targetDays, view) {
   });
 
   container.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════
+// MANUAL EDIT FUNCTIONS (dashboard overrides)
+// ═══════════════════════════════════════════
+
+/** Get manual edit for a child on a specific day */
+function getManualEdit(childId, day) {
+  const key = `${childId}_${day}`;
+  return state.manualEdits[key] || null;
+}
+
+/** Apply a manual edit to a child's day data */
+function applyManualEdit(childId, day, field, value) {
+  const key = `${childId}_${day}`;
+  if (!state.manualEdits[key]) {
+    state.manualEdits[key] = {};
+  }
+  state.manualEdits[key][field] = value;
+  
+  // Re-render the day detail if currently selected
+  if (state.selectedDay === day && state.dashboardData) {
+    const ds = (state.dashboardData.daily_summary || []).find(d => d.day === day);
+    if (ds) renderDayDetail(day, ds);
+  }
+}
+
+/** Toggle a meal flag for a child on a day */
+function toggleMeal(childId, day, mealField) {
+  const data = state.dashboardData;
+  if (!data) return;
+  
+  const ds = (data.daily_summary || []).find(d => d.day === day);
+  if (!ds) return;
+  
+  const child = (ds.children || []).find(c => c.child_id === childId);
+  if (!child) return;
+  
+  const edit = getManualEdit(childId, day);
+  const currentVal = (edit && edit[mealField] !== undefined) ? edit[mealField] : child[mealField];
+  applyManualEdit(childId, day, mealField, currentVal ? 0 : 1);
+}
+
+/** Toggle sick care flag for a child on a day */
+function toggleSick(childId, day) {
+  const data = state.dashboardData;
+  if (!data) return;
+  
+  const ds = (data.daily_summary || []).find(d => d.day === day);
+  if (!ds) return;
+  
+  const child = (ds.children || []).find(c => c.child_id === childId);
+  if (!child) return;
+  
+  const edit = getManualEdit(childId, day);
+  const currentVal = (edit && edit.is_sick !== undefined) ? edit.is_sick : child.is_sick;
+  applyManualEdit(childId, day, 'is_sick', currentVal ? 0 : 1);
+}
+
+/** Get effective value (manual edit or original) */
+function effectiveVal(child, field, day) {
+  const edit = getManualEdit(child.child_id, day);
+  if (edit && edit[field] !== undefined) return edit[field];
+  return child[field];
 }
 
 // ═══════════════════════════════════════════
@@ -823,12 +912,12 @@ function renderCalendarGrid(data) {
       countBadge = `<span class="badge ${badgeColor}">${n}名</span>`;
     }
 
-    // Meal badges
+    // Meal badges — 4 categories
     let mealLine = '';
     const mealParts = [];
     if (ds.lunch_count > 0) mealParts.push(`<span title="昼食 ${ds.lunch_count}名">🍱${ds.lunch_count}</span>`);
-    const snackTotal = (ds.am_snack_count || 0) + (ds.pm_snack_count || 0);
-    if (snackTotal > 0) mealParts.push(`<span title="おやつ ${snackTotal}名">🍪${snackTotal}</span>`);
+    if (ds.am_snack_count > 0) mealParts.push(`<span title="朝おやつ ${ds.am_snack_count}名">🍪朝${ds.am_snack_count}</span>`);
+    if (ds.pm_snack_count > 0) mealParts.push(`<span title="午後おやつ ${ds.pm_snack_count}名">🍪午${ds.pm_snack_count}</span>`);
     if (ds.dinner_count > 0) mealParts.push(`<span title="夕食 ${ds.dinner_count}名">🍽${ds.dinner_count}</span>`);
     if (mealParts.length > 0) {
       mealLine = `<div class="flex gap-1.5 mt-0.5 text-[10px] text-gray-500">${mealParts.join('')}</div>`;
@@ -850,9 +939,11 @@ function renderCalendarGrid(data) {
     if (ds.children && ds.children.length > 0) {
       const preview = ds.children.slice(0, 2).map(c => {
         const surname = escapeHtml(c.name.split(/[\s\u3000]/)[0]);
-        const tStart = _shortTime(c.actual_checkin || c.planned_start);
-        const tEnd = _shortTime(c.actual_checkout || c.planned_end);
-        return `${surname} ${tStart}-${tEnd}`;
+        // Show planned time, then actual if different
+        const tStart = _shortTime(c.planned_start || c.actual_checkin);
+        const tEnd = _shortTime(c.planned_end || c.actual_checkout);
+        const classTag = c.class_name ? `<span class="text-gray-300">[${escapeHtml(c.class_name)}]</span>` : '';
+        return `${surname} ${tStart}-${tEnd} ${classTag}`;
       });
       const more = ds.children.length > 2 ? `<span class="text-gray-400"> +${ds.children.length - 2}</span>` : '';
       childPreview = `<div class="text-[10px] text-gray-500 leading-tight mt-0.5">${preview.join('<br>')}${more}</div>`;
@@ -942,9 +1033,9 @@ function renderDayDetail(day, ds) {
     return;
   }
 
-  // Summary counters
+  // Summary counters — 4 meals + specials
   let summaryHtml = `
-    <div class="grid grid-cols-5 gap-1.5 mb-3">
+    <div class="grid grid-cols-6 gap-1.5 mb-3">
       <div class="bg-blue-50 rounded-lg px-1.5 py-1.5 text-center">
         <div class="text-lg font-bold text-blue-700">${ds.total_children}</div>
         <div class="text-[10px] text-blue-500">来園</div>
@@ -953,9 +1044,13 @@ function renderDayDetail(day, ds) {
         <div class="text-lg font-bold text-green-700">${ds.lunch_count}</div>
         <div class="text-[10px] text-green-500">🍱昼食</div>
       </div>
+      <div class="bg-yellow-50 rounded-lg px-1.5 py-1.5 text-center">
+        <div class="text-lg font-bold text-yellow-700">${ds.am_snack_count || 0}</div>
+        <div class="text-[10px] text-yellow-500">🍪朝</div>
+      </div>
       <div class="bg-amber-50 rounded-lg px-1.5 py-1.5 text-center">
-        <div class="text-lg font-bold text-amber-700">${(ds.am_snack_count || 0) + (ds.pm_snack_count || 0)}</div>
-        <div class="text-[10px] text-amber-500">🍪おやつ</div>
+        <div class="text-lg font-bold text-amber-700">${ds.pm_snack_count || 0}</div>
+        <div class="text-[10px] text-amber-500">🍪午</div>
       </div>
       <div class="bg-orange-50 rounded-lg px-1.5 py-1.5 text-center">
         <div class="text-lg font-bold text-orange-700">${ds.dinner_count || 0}</div>
@@ -979,7 +1074,7 @@ function renderDayDetail(day, ds) {
     summaryHtml += `<div class="flex flex-wrap gap-1 mb-3">${specials.join('')}</div>`;
   }
 
-  // Children table
+  // Children table — with 4 meal columns, class name, and edit toggles
   const sorted = [...children].sort((a, b) => {
     const tA = a.actual_checkin || a.planned_start || '99:99';
     const tB = b.actual_checkin || b.planned_start || '99:99';
@@ -988,15 +1083,19 @@ function renderDayDetail(day, ds) {
 
   let tableHtml = `
     <div class="border border-gray-200 rounded-lg overflow-hidden">
+      <div class="bg-blue-50 border-b border-blue-100 px-2 py-1 flex items-center justify-between">
+        <span class="text-[10px] text-blue-600"><i class="fas fa-edit mr-0.5"></i>食事・病児はクリックで編集可</span>
+      </div>
       <table class="w-full text-xs">
         <thead>
           <tr class="bg-gray-50 border-b border-gray-200">
             <th class="px-2 py-1.5 text-left text-gray-600 font-semibold">園児名</th>
-            <th class="px-2 py-1.5 text-center text-gray-600 font-semibold">時間</th>
+            <th class="px-2 py-1.5 text-center text-gray-600 font-semibold">予定/実績</th>
             <th class="px-1 py-1.5 text-center text-gray-400" title="昼食">🍱</th>
-            <th class="px-1 py-1.5 text-center text-gray-400" title="おやつ">🍪</th>
+            <th class="px-1 py-1.5 text-center text-gray-400" title="朝おやつ">🍪朝</th>
+            <th class="px-1 py-1.5 text-center text-gray-400" title="午後おやつ">🍪午</th>
             <th class="px-1 py-1.5 text-center text-gray-400" title="夕食">🍽</th>
-            <th class="px-1 py-1.5 text-center text-gray-600 font-semibold">区分</th>
+            <th class="px-1 py-1.5 text-center text-gray-400" title="病児">💊</th>
           </tr>
         </thead>
         <tbody>
@@ -1004,72 +1103,88 @@ function renderDayDetail(day, ds) {
 
   sorted.forEach((c, idx) => {
     const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70';
-    const startTime = _shortTime(c.actual_checkin || c.planned_start);
-    const endTime = _shortTime(c.actual_checkout || c.planned_end);
-    const timeStr = startTime && endTime ? `${startTime}-${endTime}` : '-';
+    // Show planned time + actual time
+    const planStart = _shortTime(c.planned_start);
+    const planEnd = _shortTime(c.planned_end);
+    const actStart = _shortTime(c.actual_checkin);
+    const actEnd = _shortTime(c.actual_checkout);
+    
+    let timeHtml = '';
+    if (planStart && planEnd) {
+      timeHtml += `<div class="text-blue-500">予 ${planStart}-${planEnd}</div>`;
+    }
+    if (actStart && actEnd) {
+      timeHtml += `<div class="text-green-600">実 ${actStart}-${actEnd}</div>`;
+    }
+    if (!timeHtml) timeHtml = '-';
 
-    const lunchMark = c.has_lunch ? '<span class="text-green-600 font-bold">○</span>' : '';
-    const snackMark = (c.has_am_snack || c.has_pm_snack) ? '<span class="text-amber-600 font-bold">○</span>' : '';
-    const dinnerMark = c.has_dinner ? '<span class="text-orange-600 font-bold">○</span>' : '';
+    // Effective values (with manual edits applied)
+    const eLunch = effectiveVal(c, 'has_lunch', day);
+    const eAmSnack = effectiveVal(c, 'has_am_snack', day);
+    const ePmSnack = effectiveVal(c, 'has_pm_snack', day);
+    const eDinner = effectiveVal(c, 'has_dinner', day);
+    const eSick = effectiveVal(c, 'is_sick', day);
+    
+    const edit = getManualEdit(c.child_id, day);
+    const hasEdit = edit && Object.keys(edit).length > 0;
 
-    const badges = [];
-    if (c.is_early_morning) badges.push('<span class="text-orange-500" title="早朝">🕒</span>');
-    if (c.is_extension) badges.push('<span class="text-purple-500" title="延長">🕘</span>');
-    if (c.is_night) badges.push('<span class="text-indigo-500" title="夜間">🌙</span>');
-    if (c.is_sick) badges.push('<span class="text-red-500" title="病児">💊</span>');
+    // Clickable meal/sick toggles
+    const cid = escapeHtml(c.child_id);
+    const lunchBtn = `<button onclick="toggleMeal('${cid}',${day},'has_lunch')" class="w-5 h-5 rounded ${eLunch ? 'bg-green-100 text-green-600 font-bold' : 'bg-gray-100 text-gray-300'} text-[10px] hover:ring-1 ring-green-400">${eLunch ? '○' : '·'}</button>`;
+    const amSnackBtn = `<button onclick="toggleMeal('${cid}',${day},'has_am_snack')" class="w-5 h-5 rounded ${eAmSnack ? 'bg-yellow-100 text-yellow-600 font-bold' : 'bg-gray-100 text-gray-300'} text-[10px] hover:ring-1 ring-yellow-400">${eAmSnack ? '○' : '·'}</button>`;
+    const pmSnackBtn = `<button onclick="toggleMeal('${cid}',${day},'has_pm_snack')" class="w-5 h-5 rounded ${ePmSnack ? 'bg-amber-100 text-amber-600 font-bold' : 'bg-gray-100 text-gray-300'} text-[10px] hover:ring-1 ring-amber-400">${ePmSnack ? '○' : '·'}</button>`;
+    const dinnerBtn = `<button onclick="toggleMeal('${cid}',${day},'has_dinner')" class="w-5 h-5 rounded ${eDinner ? 'bg-orange-100 text-orange-600 font-bold' : 'bg-gray-100 text-gray-300'} text-[10px] hover:ring-1 ring-orange-400">${eDinner ? '○' : '·'}</button>`;
+    const sickBtn = `<button onclick="toggleSick('${cid}',${day})" class="w-5 h-5 rounded ${eSick ? 'bg-red-100 text-red-600 font-bold' : 'bg-gray-100 text-gray-300'} text-[10px] hover:ring-1 ring-red-400">${eSick ? '○' : '·'}</button>`;
 
     const enrollBadge = c.enrollment_type === '一時'
       ? '<span class="bg-yellow-100 text-yellow-700 px-1 py-0.5 rounded text-[9px] font-medium ml-1">一時</span>'
+      : '';
+    const classBadge = c.class_name
+      ? `<span class="text-[9px] text-gray-400 block">${escapeHtml(c.class_name)}</span>`
+      : '';
+    const editBadge = hasEdit ? '<span class="text-[8px] text-blue-500 ml-0.5" title="手動編集あり">✎</span>' : '';
+
+    const specialIcons = [];
+    if (c.is_early_morning) specialIcons.push('🕒');
+    if (c.is_extension) specialIcons.push('🕘');
+    if (c.is_night) specialIcons.push('🌙');
+    const specialStr = specialIcons.length > 0
+      ? `<span class="text-[9px]">${specialIcons.join('')}</span>`
       : '';
 
     tableHtml += `
       <tr class="${rowBg} border-b border-gray-100 last:border-0">
         <td class="px-2 py-1.5">
           <div class="flex items-center">
-            <span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}
+            <span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}${editBadge}
           </div>
+          ${classBadge}
+          ${specialStr}
         </td>
-        <td class="px-2 py-1.5 text-center text-gray-600 font-mono whitespace-nowrap">${timeStr}</td>
-        <td class="px-1 py-1.5 text-center">${lunchMark}</td>
-        <td class="px-1 py-1.5 text-center">${snackMark}</td>
-        <td class="px-1 py-1.5 text-center">${dinnerMark}</td>
-        <td class="px-1 py-1.5 text-center">${badges.join('')}</td>
+        <td class="px-2 py-1.5 text-center font-mono whitespace-nowrap text-[10px]">${timeHtml}</td>
+        <td class="px-1 py-1.5 text-center">${lunchBtn}</td>
+        <td class="px-1 py-1.5 text-center">${amSnackBtn}</td>
+        <td class="px-1 py-1.5 text-center">${pmSnackBtn}</td>
+        <td class="px-1 py-1.5 text-center">${dinnerBtn}</td>
+        <td class="px-1 py-1.5 text-center">${sickBtn}</td>
       </tr>
     `;
   });
 
   tableHtml += '</tbody></table></div>';
 
-  // Planned vs actual detail
-  let detailHtml = '';
-  if (sorted.some(c => c.planned_start && c.actual_checkin)) {
-    detailHtml = `
-      <details class="mt-3">
-        <summary class="text-[10px] text-gray-400 cursor-pointer">予定 vs 実績の詳細</summary>
-        <div class="mt-2 space-y-1">
-          ${sorted.map(c => {
-            const planned = c.planned_start && c.planned_end
-              ? `予定 ${_shortTime(c.planned_start)}-${_shortTime(c.planned_end)}`
-              : '予定なし';
-            const actual = c.actual_checkin && c.actual_checkout
-              ? `実績 ${_shortTime(c.actual_checkin)}-${_shortTime(c.actual_checkout)}`
-              : '実績なし';
-            return `
-              <div class="bg-gray-50 rounded px-2 py-1 text-[10px]">
-                <span class="font-medium text-gray-700">${escapeHtml(c.name)}</span>
-                <span class="text-gray-400 mx-1">|</span>
-                <span class="text-blue-600">${planned}</span>
-                <span class="text-gray-400 mx-1">→</span>
-                <span class="text-green-600">${actual}</span>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </details>
+  // Manual edits notice
+  let editNotice = '';
+  const editCount = Object.keys(state.manualEdits).filter(k => k.endsWith(`_${day}`)).length;
+  if (editCount > 0) {
+    editNotice = `
+      <div class="mt-2 bg-blue-50 rounded px-2 py-1.5 flex items-center justify-between">
+        <span class="text-[10px] text-blue-600"><i class="fas fa-edit mr-0.5"></i>${editCount}名に手動編集あり（生成時に反映されます）</span>
+      </div>
     `;
   }
 
-  document.getElementById('day-detail-content').innerHTML = summaryHtml + tableHtml + detailHtml;
+  document.getElementById('day-detail-content').innerHTML = summaryHtml + tableHtml + editNotice;
 }
 
 // ═══════════════════════════════════════════
@@ -1588,6 +1703,7 @@ function resetAll() {
   state.dashboardLoading = false;
   state.selectedDay = null;
   state.dashView = VIEWS.TODAY;
+  state.manualEdits = {};
 
   ['lukumi', 'schedule', 'daily_template', 'billing_template', 'photo'].forEach(type => {
     renderFileList(type);

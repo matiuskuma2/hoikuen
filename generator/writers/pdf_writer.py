@@ -24,24 +24,42 @@ def _ensure_font():
     if _FONT_REGISTERED:
         return
     
-    # Try common Japanese font paths
+    # Try TrueType fonts first (ReportLab cannot handle CFF/PostScript outlines in .ttc)
     font_paths = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf",
-        "/usr/share/fonts/google-noto-cjk/NotoSansCJKjp-Regular.otf",
+        # TrueType fonts (compatible with ReportLab)
+        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", None),
+        ("/usr/share/fonts/truetype/arphic/uming.ttc", None),
+        ("/usr/share/fonts/truetype/arphic/ukai.ttc", None),
+        # CJK Noto fonts — PostScript outlines, may fail with ReportLab
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf", None),
+        ("/usr/share/fonts/google-noto-cjk/NotoSansCJKjp-Regular.otf", None),
     ]
     
-    for path in font_paths:
-        if os.path.exists(path):
-            try:
-                pdfmetrics.registerFont(TTFont("NotoSansCJK", path))
-                _FONT_NAME = "NotoSansCJK"
-                _FONT_REGISTERED = True
-                return
-            except Exception:
-                continue
+    for path_info in font_paths:
+        if isinstance(path_info, tuple):
+            path, subfont_idx = path_info
+        else:
+            path, subfont_idx = path_info, None
+        
+        if not os.path.exists(path):
+            continue
+        try:
+            if subfont_idx is not None:
+                pdfmetrics.registerFont(TTFont("JapaneseFont", path, subfontIndex=subfont_idx))
+            else:
+                pdfmetrics.registerFont(TTFont("JapaneseFont", path))
+            _FONT_NAME = "JapaneseFont"
+            _FONT_REGISTERED = True
+            print(f"PDF font registered: {path}")
+            return
+        except Exception as e:
+            print(f"Font registration failed for {path}: {e}")
+            continue
     
+    # Fallback: Helvetica (Japanese characters will show as ■)
+    print("WARNING: No Japanese font found. PDF will show ■ for Japanese characters.")
     _FONT_REGISTERED = True  # Prevent retry
 
 

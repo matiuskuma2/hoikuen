@@ -43,7 +43,7 @@ from parsers.schedule_parser import parse_schedule_plans, parse_multiple_schedul
 from parsers.roster_parser import parse_roster
 from engine.name_matcher import normalize_name, match_children, generate_submission_report
 from engine.usage_calculator import compute_all_usage_facts
-from engine.charge_calculator import generate_all_charge_lines
+from engine.charge_calculator import generate_all_charge_lines, _detect_enrollment_type
 from writers.daily_report_writer import write_daily_report
 from writers.billing_writer import write_billing_detail
 from writers.pdf_writer import generate_parent_statements
@@ -531,9 +531,15 @@ async def dashboard(
 
                 children_detail = []
                 for f in day_facts:
+                    # Find child info to get class_name and detect enrollment_type
+                    child_info = next(
+                        (c for c in children if c.get("lukumi_id") == f["child_id"]), {}
+                    )
+                    enrollment = _detect_enrollment_type(child_info)
                     children_detail.append({
                         "name": f["child_name"],
                         "child_id": f["child_id"],
+                        "class_name": child_info.get("class_name", ""),
                         "planned_start": f.get("planned_start"),
                         "planned_end": f.get("planned_end"),
                         "actual_checkin": f.get("actual_checkin"),
@@ -542,10 +548,7 @@ async def dashboard(
                         "billing_end": f.get("billing_end"),
                         "billing_minutes": f.get("billing_minutes"),
                         "status": f["attendance_status"],
-                        "enrollment_type": next(
-                            (c.get("enrollment_type", "月極") for c in children
-                             if c.get("lukumi_id") == f["child_id"]), "月極"
-                        ),
+                        "enrollment_type": enrollment,
                         "has_lunch": f.get("has_lunch", 0),
                         "has_am_snack": f.get("has_am_snack", 0),
                         "has_pm_snack": f.get("has_pm_snack", 0),
@@ -587,12 +590,13 @@ async def dashboard(
                 cid = c.get("lukumi_id", "")
                 c_facts = [f for f in usage_facts if f["child_id"] == cid
                            and f["attendance_status"] in ("present", "late_arrive", "early_leave")]
+                enrollment = _detect_enrollment_type(c)
                 children_summary.append({
                     "name": c["name"],
                     "child_id": cid,
                     "class_name": c.get("class_name", ""),
                     "age_class": c.get("age_class"),
-                    "enrollment_type": c.get("enrollment_type", "月極"),
+                    "enrollment_type": enrollment,
                     "has_schedule": c.get("has_schedule", False),
                     "attendance_days": len(c_facts),
                 })
