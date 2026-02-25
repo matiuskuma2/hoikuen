@@ -140,6 +140,12 @@ def _compute_single_fact(
     if has_plan and not has_checkin:
         fact["attendance_status"] = "absent"
         fact["exception_notes"] = "予定あり・実績なし（欠席）"
+        # ★ 予定表の食事フラグをキャリーする（ダッシュボード予定プレビュー用）
+        #   実績なしでも予定の食事情報は表示に必要
+        fact["has_lunch"] = plan.get("lunch_flag", 0)
+        fact["has_am_snack"] = plan.get("am_snack_flag", 0)
+        fact["has_pm_snack"] = plan.get("pm_snack_flag", 0)
+        fact["has_dinner"] = plan.get("dinner_flag", 0)
         return fact
     
     # Step 2: Billing time (v3.1確定ルール — minは使わない)

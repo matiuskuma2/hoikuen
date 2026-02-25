@@ -316,12 +316,32 @@ def _extract_plan(cells, row, start_col, end_col, lunch_col, snack_col, dinner_c
     snack = _is_flag(cells.get((row, snack_col)))
     dinner = _is_flag(cells.get((row, dinner_col)))
 
+    # ★ 予定表の「おやつ」列(K/V)は1列のみ。
+    # 朝おやつ・午後おやつは予定時間帯から推定:
+    #   - 登園予定 ≤ 10:00 → 朝おやつあり
+    #   - 降園予定 ≥ 15:00 → 午後おやつあり
+    #   おやつフラグが立っていない場合はどちらも0。
+    am_snack = False
+    pm_snack = False
+    if snack:
+        start_min = _time_to_minutes(start) if start else None
+        end_min = _time_to_minutes(end) if end else None
+        # 朝おやつ: 10:00(=600min) 以前に登園
+        if start_min is not None and start_min <= 600:
+            am_snack = True
+        # 午後おやつ: 15:00(=900min) 以降まで在園
+        if end_min is not None and end_min >= 900:
+            pm_snack = True
+        # フォールバック: 時間不明ならデフォルトで午後おやつ
+        if not am_snack and not pm_snack:
+            pm_snack = True
+
     return {
         "planned_start": start,
         "planned_end": end,
         "lunch_flag": 1 if lunch else 0,
-        "am_snack_flag": 1 if snack else 0,
-        "pm_snack_flag": 1 if snack else 0,
+        "am_snack_flag": 1 if am_snack else 0,
+        "pm_snack_flag": 1 if pm_snack else 0,
         "dinner_flag": 1 if dinner else 0,
     }
 
@@ -364,6 +384,19 @@ def _parse_time_cell(val) -> str | None:
         if 0 <= h <= 23 and 0 <= m <= 59:
             return f"{h:02d}:{m:02d}"
 
+    return None
+
+
+def _time_to_minutes(time_str: str | None) -> int | None:
+    """HH:MM → total minutes (for snack time inference)"""
+    if not time_str:
+        return None
+    parts = time_str.split(":")
+    if len(parts) >= 2:
+        try:
+            return int(parts[0]) * 60 + int(parts[1])
+        except (ValueError, TypeError):
+            return None
     return None
 
 

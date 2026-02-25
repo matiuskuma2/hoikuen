@@ -50,7 +50,7 @@ from writers.pdf_writer import generate_parent_statements
 from storage import FileStorage
 
 # === Constants ===
-VERSION = "3.5"
+VERSION = "3.7"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB per file
 
 app = FastAPI(title="あゆっこ Generator API", version=VERSION)
@@ -465,13 +465,17 @@ async def preview(
 async def dashboard(
     year: int = Form(...),
     month: int = Form(...),
-    lukumi_file: UploadFile = File(...),
+    lukumi_file: Optional[UploadFile] = File(default=None),
     schedule_files: list[UploadFile] = File(default=[]),
 ):
     """
     月間ダッシュボード用データ生成。
     カレンダー表示に必要な全情報をJSON返却。
     ZIP生成はしない（軽量）。
+    
+    ★ lukumi_file はオプション:
+      - ルクミー + 予定表 → 実績＋予定の完全ビュー
+      - 予定表のみ → 次月の利用予定プレビュー
     """
     warnings: list[dict] = []
 
@@ -479,15 +483,19 @@ async def dashboard(
         with FileStorage() as storage:
             tmpdir = storage.base_dir
 
-            # Parse Lukumi
-            lukumi_bytes = await lukumi_file.read()
-            lukumi_path = os.path.join(tmpdir, lukumi_file.filename or "lukumi.xlsx")
-            with open(lukumi_path, "wb") as f:
-                f.write(lukumi_bytes)
-            attendance_records, lukumi_children, lukumi_warnings = parse_lukumi(
-                lukumi_path, year, month
-            )
-            warnings.extend(lukumi_warnings)
+            # Parse Lukumi (optional)
+            attendance_records = []
+            lukumi_children = []
+            if lukumi_file and lukumi_file.filename:
+                lukumi_bytes = await lukumi_file.read()
+                if len(lukumi_bytes) > 0:
+                    lukumi_path = os.path.join(tmpdir, lukumi_file.filename or "lukumi.xlsx")
+                    with open(lukumi_path, "wb") as f:
+                        f.write(lukumi_bytes)
+                    attendance_records, lukumi_children, lukumi_warnings = parse_lukumi(
+                        lukumi_path, year, month
+                    )
+                    warnings.extend(lukumi_warnings)
 
             # Parse schedules
             schedule_file_paths = []
@@ -509,6 +517,36 @@ async def dashboard(
             )
             warnings.extend(match_warnings)
 
+            # ★ If no lukumi data, build children from schedule names
+            #   (予定表のみアップロード → 次月プレビュー用)
+            schedule_only_children = []
+            if len(lukumi_children) == 0 and len(schedule_child_names) > 0:
+                for sname in schedule_child_names:
+                    norm_name = normalize_name(sname)
+                    child_id = f"sched_{norm_name.replace(' ', '_')}"
+                    schedule_only_children.append({
+                        "id": child_id,
+                        "lukumi_id": child_id,
+                        "name": norm_name,
+                        "name_norm": norm_name,
+                        "name_kana": None,
+                        "age_class": None,
+                        "enrollment_type": "月極",
+                        "child_order": 1,
+                        "is_allergy": 0,
+                        "birth_date": None,
+                        "class_name": "",
+                        "has_schedule": True,
+                        "schedule_file": sname,
+                    })
+                children = schedule_only_children
+                warnings.append({
+                    "level": "info",
+                    "child_name": None,
+                    "message": f"ルクミーデータなし — 予定表から{len(children)}名の園児を検出しました（予定プレビューモード）",
+                    "suggestion": "実績データを表示するにはルクミー登降園データもアップロードしてください",
+                })
+
             # Compute usage facts
             usage_facts = compute_all_usage_facts(
                 children, all_plans, attendance_records, year, month
@@ -519,6 +557,7 @@ async def dashboard(
 
             # ── Build dashboard data ──
             days_in_month = calendar.monthrange(year, month)[1]
+            is_schedule_only = len(lukumi_children) == 0  # 予定プレビューモード
 
             # Daily summary
             daily_summary = []
@@ -539,10 +578,16 @@ async def dashboard(
                         (c for c in children if c.get("lukumi_id") == f["child_id"]), {}
                     )
                     enrollment = _detect_enrollment_type(child_info)
+                    # In schedule-only mode, mark planned children as "planned" (not "absent")
+                    status = f["attendance_status"]
+                    if is_schedule_only and status == "absent":
+                        status = "planned"
                     children_detail.append({
                         "name": f["child_name"],
                         "child_id": f["child_id"],
                         "class_name": child_info.get("class_name", ""),
+                        "age_class": child_info.get("age_class"),
+                        "birth_date": child_info.get("birth_date"),
                         "planned_start": f.get("planned_start"),
                         "planned_end": f.get("planned_end"),
                         "actual_checkin": f.get("actual_checkin"),
@@ -550,7 +595,7 @@ async def dashboard(
                         "billing_start": f.get("billing_start"),
                         "billing_end": f.get("billing_end"),
                         "billing_minutes": f.get("billing_minutes"),
-                        "status": f["attendance_status"],
+                        "status": status,
                         "enrollment_type": enrollment,
                         "has_lunch": f.get("has_lunch", 0),
                         "has_am_snack": f.get("has_am_snack", 0),
@@ -570,21 +615,24 @@ async def dashboard(
                 weekday = weekdays_jp[d.weekday()]
                 is_weekend = d.weekday() >= 5
 
+                # Count children — in schedule-only mode, include plan_only in counts
+                count_base = all_day_facts if is_schedule_only else day_facts
                 daily_summary.append({
                     "day": day,
                     "weekday": weekday,
                     "is_weekend": is_weekend,
-                    "total_children": len(day_facts),
-                    "planned_absent": len(plan_only),
+                    "total_children": len(count_base),
+                    "planned_absent": 0 if is_schedule_only else len(plan_only),
                     "total_with_plans": len(all_day_facts),
-                    "lunch_count": sum(1 for f in day_facts if f.get("has_lunch")),
-                    "am_snack_count": sum(1 for f in day_facts if f.get("has_am_snack")),
-                    "pm_snack_count": sum(1 for f in day_facts if f.get("has_pm_snack")),
-                    "dinner_count": sum(1 for f in day_facts if f.get("has_dinner")),
-                    "early_morning_count": sum(1 for f in day_facts if f.get("is_early_morning")),
-                    "extension_count": sum(1 for f in day_facts if f.get("is_extension")),
-                    "night_count": sum(1 for f in day_facts if f.get("is_night")),
-                    "sick_count": sum(1 for f in day_facts if f.get("is_sick")),
+                    "is_schedule_only": is_schedule_only,
+                    "lunch_count": sum(1 for f in count_base if f.get("has_lunch")),
+                    "am_snack_count": sum(1 for f in count_base if f.get("has_am_snack")),
+                    "pm_snack_count": sum(1 for f in count_base if f.get("has_pm_snack")),
+                    "dinner_count": sum(1 for f in count_base if f.get("has_dinner")),
+                    "early_morning_count": sum(1 for f in count_base if f.get("is_early_morning")),
+                    "extension_count": sum(1 for f in count_base if f.get("is_extension")),
+                    "night_count": sum(1 for f in count_base if f.get("is_night")),
+                    "sick_count": sum(1 for f in count_base if f.get("is_sick")),
                     "children": children_detail,
                 })
 
@@ -594,15 +642,19 @@ async def dashboard(
                 cid = c.get("lukumi_id", "")
                 c_facts = [f for f in usage_facts if f["child_id"] == cid
                            and f["attendance_status"] in ("present", "late_arrive", "early_leave")]
+                c_plan_days = [f for f in usage_facts if f["child_id"] == cid
+                               and f.get("planned_start")]
                 enrollment = _detect_enrollment_type(c)
                 children_summary.append({
                     "name": c["name"],
                     "child_id": cid,
                     "class_name": c.get("class_name", ""),
                     "age_class": c.get("age_class"),
+                    "birth_date": c.get("birth_date"),
                     "enrollment_type": enrollment,
                     "has_schedule": c.get("has_schedule", False),
                     "attendance_days": len(c_facts),
+                    "planned_days": len(c_plan_days),
                 })
 
             return {
@@ -610,6 +662,7 @@ async def dashboard(
                 "month": month,
                 "days_in_month": days_in_month,
                 "total_children": len(children),
+                "is_schedule_only": is_schedule_only,
                 "daily_summary": daily_summary,
                 "children_summary": children_summary,
                 "submission_report": submission_report,

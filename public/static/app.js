@@ -1,14 +1,24 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v4.6
+ * あゆっこ業務自動化 — Frontend Application v4.8
  * 
  * Architecture: UI → Hono proxy → Python Generator
  * 
- * v4.6: ダッシュボード完成
- *   - 予定あり・欠席の園児もカレンダー＆日詳細に表示
- *   - 欠席園児は薄いグレー＋「欠」マーク、セパレーター表示
- *   - カレンダーセルに欠席数バッジ追加
+ * v4.8: ダッシュボード予定表示完全対応 + ソート修正
+ *   - 予定のみモードで食事フラグもキャリー表示
+ *   - 欠席園児(absent)にも予定の食事フラグを保持
+ *   - おやつ列(K)を朝/午後に時間帯推定で分離
+ *   - ソートにage_class使用（ぞう組等の動物名クラスでも正しくソート）
+ *   - scoped view (今日/明日/今週) でplannedステータスを正しく表示
+ *   - 日詳細テーブルヘッダーをモードに応じて切替
  *
- * v4.5 (retained): ダッシュボード大幅強化
+ * v4.7 (retained): 予定プレビュー + 表示順改善 + 報告時間表示
+ *   - 予定表のみアップロードで次月予定プレビュー可能
+ *   - ルクミーなしでもダッシュボード表示（予定プレビューモード）
+ *   - 表示順: クラス別（0歳→1歳→2歳→一時）+ 生年月日順
+ *   - 日詳細に「報告時間」行追加（予定start + max(予定end, 実績end)）
+ *   - planned ステータス対応（予定のみモード用）
+ *
+ * v4.6 (retained): 欠席園児表示追加
  *   - カレンダーに登園予定時間を表示
  *   - 食事を4区分に分離（昼食・朝おやつ・午後おやつ・夕食）
  *   - クラス名表示（ルクミーA列のデータ）
@@ -230,17 +240,15 @@ function renderScopedDays(data, targetDays, view) {
     }
 
     const children = dayData.children || [];
-    const presentKids = children.filter(c => c.status !== 'absent');
+    const presentKids = children.filter(c => c.status !== 'absent' && c.status !== 'planned');
+    const plannedKids = children.filter(c => c.status === 'planned');
     const absentKids = children.filter(c => c.status === 'absent');
-    const sorted = [...presentKids].sort((a, b) => {
-      const tA = a.actual_checkin || a.planned_start || '99:99';
-      const tB = b.actual_checkin || b.planned_start || '99:99';
-      return tA.localeCompare(tB);
-    });
+    const sorted = sortChildrenByClassAndBirth([...presentKids, ...plannedKids]);
 
     // Summary badges
     const badges = [];
     badges.push(`<span class="bg-blue-100 text-blue-800 px-2.5 py-1 rounded-full text-xs font-bold"><i class="fas fa-child mr-1"></i>${dayData.total_children}名</span>`);
+    if (plannedKids.length > 0 && presentKids.length > 0) badges.push(`<span class="bg-blue-50 text-blue-600 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-calendar-check mr-1"></i>${plannedKids.length}名予定</span>`);
     if (absentKids.length > 0) badges.push(`<span class="bg-gray-100 text-gray-500 px-2 py-1 rounded-full text-xs font-medium"><i class="fas fa-user-slash mr-1"></i>${absentKids.length}名欠席</span>`);
     if (dayData.lunch_count > 0) badges.push(`<span class="bg-green-100 text-green-700 px-2 py-1 rounded-full text-xs font-medium">🍱昼食${dayData.lunch_count}</span>`);
     if (dayData.am_snack_count > 0) badges.push(`<span class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full text-xs font-medium">🍪朝${dayData.am_snack_count}</span>`);
@@ -253,14 +261,23 @@ function renderScopedDays(data, targetDays, view) {
 
     // Table
     let tableRows = sorted.map((c, idx) => {
-      const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70';
+      const isPlanned = c.status === 'planned';
+      const rowBg = isPlanned ? 'bg-blue-50/40' : (idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70');
       // Show both planned and actual times
       const planStart = _shortTime(c.planned_start);
       const planEnd = _shortTime(c.planned_end);
       const actStart = _shortTime(c.actual_checkin);
       const actEnd = _shortTime(c.actual_checkout);
-      const timeStr = actStart && actEnd ? `${actStart}-${actEnd}` : (planStart && planEnd ? `${planStart}-${planEnd}` : '-');
-      const planStr = planStart && planEnd ? `予${planStart}-${planEnd}` : '';
+      
+      let timeStr = '-';
+      let planStr = '';
+      if (actStart && actEnd) {
+        timeStr = `${actStart}-${actEnd}`;
+        if (planStart && planEnd) planStr = `予${planStart}-${planEnd}`;
+      } else if (planStart && planEnd) {
+        timeStr = `${planStart}-${planEnd}`;
+        planStr = '';
+      }
       
       const eLunch = effectiveVal(c, 'has_lunch', day);
       const eAmSnack = effectiveVal(c, 'has_am_snack', day);
@@ -283,13 +300,16 @@ function renderScopedDays(data, targetDays, view) {
       const classBadge = c.class_name
         ? `<span class="text-[9px] text-gray-400 ml-1">${escapeHtml(c.class_name)}</span>`
         : '';
+      const plannedBadge = isPlanned
+        ? '<span class="bg-blue-50 text-blue-400 px-1 py-0.5 rounded text-[8px] ml-1">予定</span>'
+        : '';
       return `
         <tr class="${rowBg} border-b border-gray-100 last:border-0">
           <td class="px-3 py-2">
-            <div><span class="font-medium text-gray-800">${escapeHtml(c.name)}</span>${enrollBadge}${classBadge}</div>
+            <div><span class="font-medium ${isPlanned ? 'text-blue-700' : 'text-gray-800'}">${escapeHtml(c.name)}</span>${enrollBadge}${plannedBadge}${classBadge}</div>
             ${planStr ? `<div class="text-[10px] text-blue-400">${planStr}</div>` : ''}
           </td>
-          <td class="px-3 py-2 text-center text-gray-600 font-mono whitespace-nowrap">${timeStr}</td>
+          <td class="px-3 py-2 text-center ${isPlanned ? 'text-blue-500' : 'text-gray-600'} font-mono whitespace-nowrap">${timeStr}</td>
           <td class="px-2 py-2 text-center">${lunchMark}</td>
           <td class="px-2 py-2 text-center">${amSnackMark}</td>
           <td class="px-2 py-2 text-center">${pmSnackMark}</td>
@@ -328,6 +348,55 @@ function renderScopedDays(data, targetDays, view) {
   });
 
   container.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════
+// CHILD SORT: Class order (0歳→1歳→2歳→一時) + Birth date
+// ═══════════════════════════════════════════
+
+/** 
+ * Sort order for class_name: 0歳=0, 1歳=1, 2歳=2, ..., 一時預かり=90, unknown=99
+ * Also checks age_class field from lukumi data.
+ */
+function _classOrder(child) {
+  const cn = (child.class_name || '').trim();
+  const enroll = child.enrollment_type || '';
+  
+  // 一時預かり / 一時 — always last among classes
+  if (cn.includes('一時') || enroll === '一時') return 90;
+  
+  // Match "N歳" pattern in class_name
+  const m = cn.match(/(\d)歳/);
+  if (m) return parseInt(m[1]);
+  
+  // Use age_class from lukumi data if available (numeric age)
+  const ac = child.age_class;
+  if (ac !== null && ac !== undefined && !isNaN(parseInt(ac))) {
+    return parseInt(ac);
+  }
+  
+  // Unknown class — put after age classes but before 一時
+  return 50;
+}
+
+/**
+ * Sort children: class order → birth date (ascending = oldest first)
+ */
+function sortChildrenByClassAndBirth(children) {
+  return [...children].sort((a, b) => {
+    // 1. Class order: 0歳→1歳→2歳→…→一時
+    const classA = _classOrder(a);
+    const classB = _classOrder(b);
+    if (classA !== classB) return classA - classB;
+    
+    // 2. Birth date (ascending = older child first)
+    const bdA = a.birth_date || '9999-99-99';
+    const bdB = b.birth_date || '9999-99-99';
+    if (bdA !== bdB) return bdA.localeCompare(bdB);
+    
+    // 3. Name fallback
+    return (a.name || '').localeCompare(b.name || '');
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -524,7 +593,7 @@ function updateSummary() {
     const btnGen = document.getElementById('btn-generate');
     if (btnGen) btnGen.disabled = !hasLukumi;
     const btnDash = document.getElementById('btn-dashboard-load');
-    if (btnDash) btnDash.disabled = !hasLukumi;
+    if (btnDash) btnDash.disabled = !(hasLukumi || scheduleCount > 0);
   } else {
     summary.classList.add('hidden');
   }
@@ -693,8 +762,8 @@ function closeManual() {
 
 async function loadDashboard() {
   if (state.dashboardLoading) return;
-  if (state.files.lukumi.length === 0) {
-    alert('ルクミー登降園データをアップロードしてください');
+  if (state.files.lukumi.length === 0 && state.files.schedule.length === 0) {
+    alert('ルクミー登降園データまたは利用予定表をアップロードしてください');
     return;
   }
 
@@ -712,7 +781,9 @@ async function loadDashboard() {
     const formData = new FormData();
     formData.append('year', year.toString());
     formData.append('month', month.toString());
-    formData.append('lukumi_file', state.files.lukumi[0]);
+    if (state.files.lukumi.length > 0) {
+      formData.append('lukumi_file', state.files.lukumi[0]);
+    }
     state.files.schedule.forEach(f => formData.append('schedule_files', f));
 
     const response = await fetch('/api/jobs/dashboard', {
@@ -764,8 +835,23 @@ function renderDashboard(data) {
   document.getElementById('dashboard-content').classList.remove('hidden');
 
   // Month title
+  const modeLabel = data.is_schedule_only ? '（予定プレビュー）' : '';
   document.getElementById('dashboard-month-title').textContent =
-    `${data.year}年${data.month}月の利用予定`;
+    `${data.year}年${data.month}月の利用予定${modeLabel}`;
+
+  // ── Alerts area ──
+  let alertsHtml = '';
+  if (data.is_schedule_only) {
+    alertsHtml += `
+      <div class="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-start gap-3 mb-2">
+        <i class="fas fa-calendar-check text-blue-500 mt-0.5"></i>
+        <div class="text-sm">
+          <span class="text-blue-700 font-medium">予定プレビューモード</span>
+          <span class="text-blue-600"> — 利用予定表のデータのみ表示中です。実績データを表示するにはルクミー登降園データもアップロードしてください。</span>
+        </div>
+      </div>
+    `;
+  }
 
   // ── Monthly summary stats bar ──
   const ds = data.daily_summary || [];
@@ -795,7 +881,7 @@ function renderDashboard(data) {
   if (subReport && (subReport.not_submitted?.length > 0 || subReport.unmatched_schedules?.length > 0)) {
     const notSub = subReport.not_submitted || [];
     const unmatched = subReport.unmatched_schedules || [];
-    alertsDiv.innerHTML = `
+    alertsHtml += `
       <div class="bg-orange-50 border border-orange-200 rounded-xl px-4 py-3 flex items-start gap-3">
         <i class="fas fa-exclamation-triangle text-orange-500 mt-0.5"></i>
         <div class="text-sm">
@@ -810,9 +896,8 @@ function renderDashboard(data) {
         </div>
       </div>
     `;
-  } else {
-    alertsDiv.innerHTML = '';
   }
+  alertsDiv.innerHTML = alertsHtml;
 
   // Render calendar grid
   renderCalendarGrid(data);
@@ -956,9 +1041,11 @@ function renderCalendarGrid(data) {
         const tEnd = _shortTime(c.planned_end || c.actual_checkout);
         const classTag = c.class_name ? `<span class="text-gray-300">[${escapeHtml(c.class_name)}]</span>` : '';
         const isAbsent = c.status === 'absent';
+        const isPlanned = c.status === 'planned';
         const absentMark = isAbsent ? '<span class="text-red-300 text-[8px]">欠</span>' : '';
-        const textColor = isAbsent ? 'text-gray-300 line-through' : '';
-        return `<span class="${textColor}">${surname} ${tStart}-${tEnd}</span> ${classTag}${absentMark}`;
+        const plannedMark = isPlanned ? '<span class="text-blue-300 text-[8px]">予</span>' : '';
+        const textColor = isAbsent ? 'text-gray-300 line-through' : isPlanned ? 'text-blue-400' : '';
+        return `<span class="${textColor}">${surname} ${tStart}-${tEnd}</span> ${classTag}${absentMark}${plannedMark}`;
       });
       const more = ds.children.length > 3 ? `<span class="text-gray-400"> +${ds.children.length - 3}</span>` : '';
       childPreview = `<div class="text-[10px] text-gray-500 leading-tight mt-0.5">${preview.join('<br>')}${more}</div>`;
@@ -1030,17 +1117,29 @@ function renderDayDetail(day, ds) {
   const weekday = ds.weekday || '';
   const dateStr = `${data.month}月${day}日（${weekday}）`;
 
+  // Pre-categorize children for both title and table
+  const children = ds.children || [];
+  const presentChildren = children.filter(c => c.status !== 'absent' && c.status !== 'planned');
+  const plannedChildren = children.filter(c => c.status === 'planned');
+  const absentChildren = children.filter(c => c.status === 'absent');
+  
+  const sortedPresent = sortChildrenByClassAndBirth(presentChildren);
+  const sortedPlanned = sortChildrenByClassAndBirth(plannedChildren);
+  const sortedAbsent = sortChildrenByClassAndBirth(absentChildren);
+
+  const isScheduleOnly = ds.is_schedule_only || data.is_schedule_only;
+
   document.getElementById('day-detail-title').innerHTML = `
     <div class="flex items-center justify-between">
       <span>${dateStr}</span>
       <div class="flex gap-2 text-xs font-normal">
-        <span class="text-blue-600">${ds.total_children}名来園</span>
+        <span class="text-blue-600">${ds.total_children}名${isScheduleOnly ? '予定' : '来園'}</span>
+        ${sortedPlanned.length > 0 && !isScheduleOnly ? `<span class="text-blue-400">${sortedPlanned.length}名予定のみ</span>` : ''}
         ${ds.planned_absent > 0 ? `<span class="text-gray-400">${ds.planned_absent}名欠席</span>` : ''}
       </div>
     </div>
   `;
 
-  const children = ds.children || [];
   if (children.length === 0) {
     document.getElementById('day-detail-content').innerHTML = `
       <div class="text-center py-6 text-gray-400">
@@ -1052,11 +1151,12 @@ function renderDayDetail(day, ds) {
   }
 
   // Summary counters — 4 meals + specials
+  const summaryLabel = isScheduleOnly ? '予定' : '来園';
   let summaryHtml = `
     <div class="grid grid-cols-6 gap-1.5 mb-3">
       <div class="bg-blue-50 rounded-lg px-1.5 py-1.5 text-center">
         <div class="text-lg font-bold text-blue-700">${ds.total_children}</div>
-        <div class="text-[10px] text-blue-500">来園</div>
+        <div class="text-[10px] text-blue-500">${summaryLabel}</div>
       </div>
       <div class="bg-green-50 rounded-lg px-1.5 py-1.5 text-center">
         <div class="text-lg font-bold text-green-700">${ds.lunch_count}</div>
@@ -1093,21 +1193,6 @@ function renderDayDetail(day, ds) {
   }
 
   // Children table — with 4 meal columns, class name, and edit toggles
-  // Separate present and absent children
-  const presentChildren = children.filter(c => c.status !== 'absent');
-  const absentChildren = children.filter(c => c.status === 'absent');
-  
-  const sortedPresent = [...presentChildren].sort((a, b) => {
-    const tA = a.actual_checkin || a.planned_start || '99:99';
-    const tB = b.actual_checkin || b.planned_start || '99:99';
-    return tA.localeCompare(tB);
-  });
-  const sortedAbsent = [...absentChildren].sort((a, b) => {
-    const tA = a.planned_start || '99:99';
-    const tB = b.planned_start || '99:99';
-    return tA.localeCompare(tB);
-  });
-
   let tableHtml = `
     <div class="border border-gray-200 rounded-lg overflow-hidden">
       <div class="bg-blue-50 border-b border-blue-100 px-2 py-1 flex items-center justify-between">
@@ -1117,7 +1202,7 @@ function renderDayDetail(day, ds) {
         <thead>
           <tr class="bg-gray-50 border-b border-gray-200">
             <th class="px-2 py-1.5 text-left text-gray-600 font-semibold">園児名</th>
-            <th class="px-2 py-1.5 text-center text-gray-600 font-semibold">予定/実績</th>
+            <th class="px-2 py-1.5 text-center text-gray-600 font-semibold">${isScheduleOnly ? '予定時間' : '予定/実績'}</th>
             <th class="px-1 py-1.5 text-center text-gray-400" title="昼食">🍱</th>
             <th class="px-1 py-1.5 text-center text-gray-400" title="朝おやつ">🍪朝</th>
             <th class="px-1 py-1.5 text-center text-gray-400" title="午後おやつ">🍪午</th>
@@ -1129,10 +1214,12 @@ function renderDayDetail(day, ds) {
   `;
 
   // Helper function to render a child row
-  function renderChildRow(c, idx, isAbsent) {
+  function renderChildRow(c, idx, isAbsent, isPlanned) {
     const rowBg = isAbsent
       ? 'bg-gray-50/50'
-      : (idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70');
+      : isPlanned
+        ? 'bg-blue-50/30'
+        : (idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/70');
     const textOpacity = isAbsent ? 'opacity-50' : '';
     
     // Show planned time + actual time
@@ -1148,8 +1235,19 @@ function renderDayDetail(day, ds) {
     if (actStart && actEnd) {
       timeHtml += `<div class="text-green-600">実 ${actStart}-${actEnd}</div>`;
     }
+    // Show billing time if different from actual (applies to 一時 and monthly with plan)
+    const billStart = _shortTime(c.billing_start);
+    const billEnd = _shortTime(c.billing_end);
+    if (billStart && billEnd && actStart && actEnd) {
+      const billingDiff = (billStart !== actStart || billEnd !== actEnd);
+      if (billingDiff) {
+        timeHtml += `<div class="text-purple-500 font-medium">報 ${billStart}-${billEnd}</div>`;
+      }
+    }
     if (isAbsent) {
       timeHtml += `<div class="text-red-400 text-[9px]">欠席</div>`;
+    } else if (isPlanned) {
+      timeHtml += `<div class="text-blue-400 text-[9px]">予定</div>`;
     }
     if (!timeHtml) timeHtml = '-';
 
@@ -1178,7 +1276,8 @@ function renderDayDetail(day, ds) {
       ? `<span class="text-[9px] text-gray-400 block">${escapeHtml(c.class_name)}</span>`
       : '';
     const editBadge = hasEdit ? '<span class="text-[8px] text-blue-500 ml-0.5" title="手動編集あり">✎</span>' : '';
-    const absentBadge = isAbsent ? '<span class="bg-red-50 text-red-400 px-1 py-0.5 rounded text-[8px] ml-1">欠席</span>' : '';
+    const absentBadge = isAbsent ? '<span class="bg-red-50 text-red-400 px-1 py-0.5 rounded text-[8px] ml-1">欠席</span>'
+      : isPlanned ? '<span class="bg-blue-50 text-blue-400 px-1 py-0.5 rounded text-[8px] ml-1">予定</span>' : '';
 
     const specialIcons = [];
     if (c.is_early_morning) specialIcons.push('🕒');
@@ -1209,6 +1308,20 @@ function renderDayDetail(day, ds) {
 
   // Render present children rows
   let childRows = sortedPresent.map((c, idx) => renderChildRow(c, idx, false)).join('');
+  
+  // Add planned children (schedule-only mode) with separator
+  if (sortedPlanned.length > 0) {
+    if (sortedPresent.length > 0) {
+      childRows += `
+        <tr class="bg-blue-50 border-b border-blue-200">
+          <td colspan="7" class="px-2 py-1 text-[10px] text-blue-600 font-medium">
+            <i class="fas fa-calendar-check mr-1 text-blue-400"></i>利用予定 (${sortedPlanned.length}名)
+          </td>
+        </tr>
+      `;
+    }
+    childRows += sortedPlanned.map((c, idx) => renderChildRow(c, idx, false, true)).join('');
+  }
   
   // Add absent children with separator
   if (sortedAbsent.length > 0) {
