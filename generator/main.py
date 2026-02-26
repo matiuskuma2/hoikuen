@@ -50,7 +50,7 @@ from writers.pdf_writer import generate_parent_statements
 from storage import FileStorage
 
 # === Constants ===
-VERSION = "3.7"
+VERSION = "3.8"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB per file
 
 app = FastAPI(title="あゆっこ Generator API", version=VERSION)

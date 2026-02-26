@@ -1,21 +1,26 @@
 """
-児童利用予定表パーサー — v4.0 Phase B-3+
+児童利用予定表パーサー — v5.0 Phase B-4
 1ファイル=複数園児対応（全シート読み込み）
 
-構造:
-  B6  = 園児氏名
-  J1  = 年, M1 = 月
-  左半分(日1-15): B12:B26=日付, D=登所, G=降所, J=昼食, K=おやつ, L=夕食
-  右半分(日16-31): M12:M27=日付, O=登所, R=降所, U=昼食, V=おやつ, W=夕食
+実ファイル構造（2026年版）:
+  D6  = 園児氏名
+  F1  = 年 (col 6), J1 = 月 (col 10)
+  左半分(日1-15):
+    B12:B26 = 日付(datetime型), C=曜日(serial)
+    D = 登所(time型), E = 降所(time型)
+    F = 昼食, G = 朝おやつ, H = 午後おやつ, I = 夕食
+  右半分(日16-31):
+    J12:J27 = 日付(datetime型), K=曜日(serial)
+    L = 登所(time型), M = 降所(time型)
+    N = 昼食, O = 朝おやつ, P = 午後おやつ, Q = 夕食
 
-v4.0 変更:
-  - 1ファイルに複数シートがある場合、全シートを読み込み（1シート=1園児）
-  - シート「原本」が見つかれば優先、なければ全シートを処理
-  - 空シート・非予定シートは自動スキップ
-  - 月不一致時に詳細warning（ファイル名+検出月+対象月）
-  - 未突合ファイルに理由を添付
-  - 園児名検出失敗時のフォールバック（ファイル名から推測）
-  - 食事フラグ欠落時のデフォルト推定
+v5.0 変更:
+  - 実ファイル構造に完全対応（列マッピング修正）
+  - 年=F1, 月=J1 に修正（旧: 年=J1, 月=M1）
+  - 日付列がdatetime型の場合にday抽出対応
+  - 食事4列（昼食・朝おやつ・午後おやつ・夕食）を個別読み取り
+  - おやつ列の推定ロジック不要化（実ファイルは朝/午後おやつが別列）
+  - 旧フォーマット（B6=名前, J1=年, M1=月）も自動検出しフォールバック
 """
 
 import os
@@ -99,6 +104,104 @@ def parse_schedule_plans(file_path: str, target_year: int, target_month: int):
     return results, warnings
 
 
+def _detect_layout(cells):
+    """
+    Detect the sheet layout format.
+    Returns a layout dict with column mappings.
+
+    新フォーマット (2026年版):
+      年: F1(col6), 月: J1(col10)
+      名前: D6(col4)
+      左半分: B=日付, D=登所, E=降所, F=昼食, G=朝おやつ, H=午後おやつ, I=夕食
+      右半分: J=日付, L=登所, M=降所, N=昼食, O=朝おやつ, P=午後おやつ, Q=夕食
+
+    旧フォーマット:
+      年: J1(col10), 月: M1(col13)
+      名前: B6(col2)
+      左半分: B=日付, D=登所, G=降所, J=昼食, K=おやつ, L=夕食
+      右半分: M=日付, O=登所, R=降所, U=昼食, V=おやつ, W=夕食
+    """
+    # Check header row 11 for meal column layout
+    # 新フォーマット: F11=昼食, G11=朝おやつ, H11=午後おやつ, I11=夕食
+    # 旧フォーマット: J11=昼食, K11=おやつ, L11=夕食
+    f11 = str(cells.get((11, 6), "")).strip()  # F11
+    g11 = str(cells.get((11, 7), "")).strip()  # G11
+
+    # Check if header text contains 昼食 at col F (new format) or at col J (old format)
+    has_new_header = "昼食" in f11 or "おやつ" in g11
+
+    # Also check: in the new format, year is at F1 (col 6) and a valid year
+    f1_val = cells.get((1, 6))
+    j1_val = cells.get((1, 10))
+
+    # New format: F1 has year (2020-2030), J1 has month (1-12)
+    f1_is_year = False
+    j1_is_month = False
+    if f1_val is not None:
+        try:
+            f1_int = int(f1_val)
+            if 2020 <= f1_int <= 2030:
+                f1_is_year = True
+        except (ValueError, TypeError):
+            pass
+    if j1_val is not None:
+        try:
+            j1_int = int(j1_val)
+            if 1 <= j1_int <= 12:
+                j1_is_month = True
+        except (ValueError, TypeError):
+            pass
+
+    is_new_format = has_new_header or (f1_is_year and j1_is_month)
+
+    if is_new_format:
+        return {
+            "format": "new",
+            "year_pos": (1, 6),       # F1
+            "month_pos": (1, 10),     # J1
+            "name_pos": (6, 4),       # D6
+            # Left half (days 1-15) - data starts at row 12
+            "left_date_col": 2,       # B
+            "left_start_col": 4,      # D
+            "left_end_col": 5,        # E
+            "left_lunch_col": 6,      # F
+            "left_am_snack_col": 7,   # G
+            "left_pm_snack_col": 8,   # H
+            "left_dinner_col": 9,     # I
+            # Right half (days 16-31) - data starts at row 12
+            "right_date_col": 10,     # J
+            "right_start_col": 12,    # L
+            "right_end_col": 13,      # M
+            "right_lunch_col": 14,    # N
+            "right_am_snack_col": 15, # O
+            "right_pm_snack_col": 16, # P
+            "right_dinner_col": 17,   # Q
+            "has_separate_snacks": True,
+        }
+    else:
+        return {
+            "format": "legacy",
+            "year_pos": (1, 10),      # J1
+            "month_pos": (1, 13),     # M1
+            "name_pos": (6, 2),       # B6
+            # Left half
+            "left_date_col": 2,       # B
+            "left_start_col": 4,      # D
+            "left_end_col": 7,        # G
+            "left_lunch_col": 10,     # J
+            "left_snack_col": 11,     # K
+            "left_dinner_col": 12,    # L
+            # Right half
+            "right_date_col": 13,     # M
+            "right_start_col": 15,    # O
+            "right_end_col": 18,      # R
+            "right_lunch_col": 21,    # U
+            "right_snack_col": 22,    # V
+            "right_dinner_col": 23,   # W
+            "has_separate_snacks": False,
+        }
+
+
 def _parse_single_sheet(ws, filename: str, sheet_label: str,
                         target_year: int, target_month: int):
     """Parse a single worksheet as one child's schedule."""
@@ -117,39 +220,64 @@ def _parse_single_sheet(ws, filename: str, sheet_label: str,
     if len(cells) < 3:
         return plans, None, []
 
+    # ── Detect layout format ──
+    layout = _detect_layout(cells)
+
     # ── Extract child name ──
-    # Primary: B6 (row 6, col 2)
-    child_name_raw = cells.get((6, 2))
+    name_pos = layout["name_pos"]
+    child_name_raw = cells.get(name_pos)
     if child_name_raw:
         child_name = normalize_name(str(child_name_raw))
-    else:
-        # Fallback: try B5, C6, D6
-        for fallback_pos in [(5, 2), (6, 3), (6, 4)]:
+
+    if not child_name:
+        # Fallback: try multiple positions
+        fallback_positions = [(6, 2), (6, 3), (6, 4), (5, 2), (5, 4)]
+        for fallback_pos in fallback_positions:
+            if fallback_pos == name_pos:
+                continue  # already tried
             fallback_val = cells.get(fallback_pos)
             if fallback_val and str(fallback_val).strip():
-                child_name = normalize_name(str(fallback_val))
+                # Skip if it looks like a label (e.g., "お子様名（")
+                val_str = str(fallback_val).strip()
+                if "お子様" in val_str or "（" in val_str or "申込" in val_str:
+                    continue
+                child_name = normalize_name(val_str)
                 warnings.append({
                     "level": "info",
                     "child_name": child_name,
-                    "message": f"「{sheet_label}」: B6が空のため{_cell_ref(fallback_pos)}から園児名を検出",
+                    "message": f"「{sheet_label}」: {_cell_ref(name_pos)}が空のため{_cell_ref(fallback_pos)}から園児名を検出",
                     "suggestion": None,
                     "file": filename,
                 })
                 break
 
     if not child_name:
+        # Try U10 (col 21, row 10) — some sheets have the name there
+        u10_val = cells.get((10, 21))
+        if u10_val and str(u10_val).strip():
+            child_name = normalize_name(str(u10_val))
+            warnings.append({
+                "level": "info",
+                "child_name": child_name,
+                "message": f"「{sheet_label}」: U10から園児名を検出",
+                "suggestion": None,
+                "file": filename,
+            })
+
+    if not child_name:
         # Try sheet name as child name (common pattern: sheet name = child name)
         sheet_name_candidate = ws.title.strip()
         if sheet_name_candidate and len(sheet_name_candidate) >= 2 and not sheet_name_candidate.startswith("Sheet"):
-            # Exclude common non-name sheet titles
+            # Exclude common non-name sheet titles and pure numbers
             skip_titles = {"原本", "設定", "マスタ", "一覧", "集計", "sheet1", "sheet2", "sheet3"}
-            if sheet_name_candidate.lower() not in skip_titles:
+            if (sheet_name_candidate.lower() not in skip_titles
+                    and not sheet_name_candidate.isdigit()):
                 child_name = normalize_name(sheet_name_candidate)
                 warnings.append({
                     "level": "warn",
                     "child_name": child_name,
                     "message": f"「{sheet_label}」: セルから園児名を検出できず、シート名「{ws.title}」から推測",
-                    "suggestion": "予定表のB6セルに園児名を入力してください",
+                    "suggestion": "予定表のD6セルに園児名を入力してください",
                     "file": filename,
                 })
 
@@ -162,7 +290,7 @@ def _parse_single_sheet(ws, filename: str, sheet_label: str,
                 "level": "warn",
                 "child_name": child_name,
                 "message": f"「{sheet_label}」: セルから園児名を検出できず、ファイル名から推測",
-                "suggestion": "予定表のB6セルに園児名を入力してください",
+                "suggestion": "予定表のD6セルに園児名を入力してください",
                 "file": filename,
             })
         else:
@@ -170,28 +298,32 @@ def _parse_single_sheet(ws, filename: str, sheet_label: str,
                 "level": "error",
                 "child_name": None,
                 "message": f"「{sheet_label}」: 園児名を検出できません",
-                "suggestion": "B6セルに園児名が入力されているか確認してください",
+                "suggestion": "D6セルに園児名が入力されているか確認してください",
                 "file": filename,
             })
             return plans, child_name, warnings
 
     # ── Check year/month ──
-    file_year = _safe_int(cells.get((1, 10)))    # J1
-    file_month = _safe_int(cells.get((1, 13)))   # M1
+    year_pos = layout["year_pos"]
+    month_pos = layout["month_pos"]
+    file_year = _safe_int(cells.get(year_pos))
+    file_month = _safe_int(cells.get(month_pos))
 
-    # Try alternate locations for year/month
-    if not file_year:
-        for pos in [(1, 11), (2, 10), (1, 9)]:
+    # Try alternate locations for year/month if primary fails
+    if not file_year or not (2020 <= file_year <= 2030):
+        for pos in [(1, 6), (1, 10), (1, 11), (8, 8), (8, 11)]:
             v = _safe_int(cells.get(pos))
             if v and 2020 <= v <= 2030:
                 file_year = v
                 break
-    if not file_month:
-        for pos in [(1, 14), (2, 13), (1, 12)]:
+    if not file_month or not (1 <= file_month <= 12):
+        for pos in [(1, 10), (1, 13), (1, 14), (8, 11), (8, 14)]:
             v = _safe_int(cells.get(pos))
             if v and 1 <= v <= 12:
-                file_month = v
-                break
+                # Avoid confusing year and month
+                if v != file_year:
+                    file_month = v
+                    break
 
     month_mismatch = False
     if file_year and file_month:
@@ -208,22 +340,33 @@ def _parse_single_sheet(ws, filename: str, sheet_label: str,
         warnings.append({
             "level": "info",
             "child_name": child_name,
-            "message": f"「{sheet_label}」: 年月セル(J1/M1)が空または読み取れません",
+            "message": f"「{sheet_label}」: 年月セルが空または読み取れません (year={file_year}, month={file_month})",
             "suggestion": None,
             "file": filename,
         })
 
     # ── Parse left half: days 1-15 ──
-    # B=2(date), D=4(start), G=7(end), J=10(lunch), K=11(snack), L=12(dinner)
     for i in range(15):
         row = 12 + i
-        day = _safe_int(cells.get((row, 2)))
+        day = _extract_day(cells.get((row, layout["left_date_col"])))
         if day is None or day < 1 or day > 31:
             continue
 
-        plan = _extract_plan(cells, row,
-                             start_col=4, end_col=7,
-                             lunch_col=10, snack_col=11, dinner_col=12)
+        if layout["has_separate_snacks"]:
+            plan = _extract_plan_v2(cells, row,
+                                    start_col=layout["left_start_col"],
+                                    end_col=layout["left_end_col"],
+                                    lunch_col=layout["left_lunch_col"],
+                                    am_snack_col=layout["left_am_snack_col"],
+                                    pm_snack_col=layout["left_pm_snack_col"],
+                                    dinner_col=layout["left_dinner_col"])
+        else:
+            plan = _extract_plan_legacy(cells, row,
+                                        start_col=layout["left_start_col"],
+                                        end_col=layout["left_end_col"],
+                                        lunch_col=layout["left_lunch_col"],
+                                        snack_col=layout["left_snack_col"],
+                                        dinner_col=layout["left_dinner_col"])
         if plan:
             plan["day"] = day
             plan["child_name"] = child_name
@@ -232,16 +375,27 @@ def _parse_single_sheet(ws, filename: str, sheet_label: str,
             plans[day] = plan
 
     # ── Parse right half: days 16-31 ──
-    # M=13(date), O=15(start), R=18(end), U=21(lunch), V=22(snack), W=23(dinner)
     for i in range(16):
         row = 12 + i
-        day = _safe_int(cells.get((row, 13)))
+        day = _extract_day(cells.get((row, layout["right_date_col"])))
         if day is None or day < 1 or day > 31:
             continue
 
-        plan = _extract_plan(cells, row,
-                             start_col=15, end_col=18,
-                             lunch_col=21, snack_col=22, dinner_col=23)
+        if layout["has_separate_snacks"]:
+            plan = _extract_plan_v2(cells, row,
+                                    start_col=layout["right_start_col"],
+                                    end_col=layout["right_end_col"],
+                                    lunch_col=layout["right_lunch_col"],
+                                    am_snack_col=layout["right_am_snack_col"],
+                                    pm_snack_col=layout["right_pm_snack_col"],
+                                    dinner_col=layout["right_dinner_col"])
+        else:
+            plan = _extract_plan_legacy(cells, row,
+                                        start_col=layout["right_start_col"],
+                                        end_col=layout["right_end_col"],
+                                        lunch_col=layout["right_lunch_col"],
+                                        snack_col=layout["right_snack_col"],
+                                        dinner_col=layout["right_dinner_col"])
         if plan:
             plan["day"] = day
             plan["child_name"] = child_name
@@ -303,8 +457,73 @@ def parse_multiple_schedules(
     return all_plans, child_names, all_warnings
 
 
-def _extract_plan(cells, row, start_col, end_col, lunch_col, snack_col, dinner_col):
-    """Extract a single day's plan from cell values"""
+def _extract_day(val) -> int | None:
+    """Extract day number from a cell value.
+    Handles: int, datetime, float, string."""
+    if val is None:
+        return None
+
+    # datetime型: 2026-01-05 → day=5
+    if isinstance(val, datetime):
+        return val.day
+
+    # time型はスキップ（日付ではない）
+    if isinstance(val, dt_time):
+        return None
+
+    # int型: そのまま
+    if isinstance(val, int):
+        if 1 <= val <= 31:
+            return val
+        return None
+
+    # float型: 小数点以下なしなら整数として扱う
+    if isinstance(val, float):
+        if val == int(val) and 1 <= int(val) <= 31:
+            return int(val)
+        return None
+
+    # 文字列
+    s = str(val).strip()
+    try:
+        d = int(s)
+        if 1 <= d <= 31:
+            return d
+    except ValueError:
+        pass
+
+    return None
+
+
+def _extract_plan_v2(cells, row, start_col, end_col,
+                     lunch_col, am_snack_col, pm_snack_col, dinner_col):
+    """Extract a single day's plan from cell values (new format with separate snack columns)."""
+    start = _parse_time_cell(cells.get((row, start_col)))
+    end = _parse_time_cell(cells.get((row, end_col)))
+
+    # If no times at all, skip this day
+    if start is None and end is None:
+        return None
+
+    lunch = _is_flag(cells.get((row, lunch_col)))
+    am_snack = _is_flag(cells.get((row, am_snack_col)))
+    pm_snack = _is_flag(cells.get((row, pm_snack_col)))
+    dinner = _is_flag(cells.get((row, dinner_col)))
+
+    return {
+        "planned_start": start,
+        "planned_end": end,
+        "lunch_flag": 1 if lunch else 0,
+        "am_snack_flag": 1 if am_snack else 0,
+        "pm_snack_flag": 1 if pm_snack else 0,
+        "dinner_flag": 1 if dinner else 0,
+    }
+
+
+def _extract_plan_legacy(cells, row, start_col, end_col,
+                         lunch_col, snack_col, dinner_col):
+    """Extract a single day's plan from cell values (legacy format with single snack column).
+    Uses time-based inference to split snack into morning/afternoon."""
     start = _parse_time_cell(cells.get((row, start_col)))
     end = _parse_time_cell(cells.get((row, end_col)))
 
@@ -316,23 +535,17 @@ def _extract_plan(cells, row, start_col, end_col, lunch_col, snack_col, dinner_c
     snack = _is_flag(cells.get((row, snack_col)))
     dinner = _is_flag(cells.get((row, dinner_col)))
 
-    # ★ 予定表の「おやつ」列(K/V)は1列のみ。
+    # ★ 旧フォーマットの「おやつ」列(K/V)は1列のみ。
     # 朝おやつ・午後おやつは予定時間帯から推定:
-    #   - 登園予定 ≤ 10:00 → 朝おやつあり
-    #   - 降園予定 ≥ 15:00 → 午後おやつあり
-    #   おやつフラグが立っていない場合はどちらも0。
     am_snack = False
     pm_snack = False
     if snack:
         start_min = _time_to_minutes(start) if start else None
         end_min = _time_to_minutes(end) if end else None
-        # 朝おやつ: 10:00(=600min) 以前に登園
         if start_min is not None and start_min <= 600:
             am_snack = True
-        # 午後おやつ: 15:00(=900min) 以降まで在園
         if end_min is not None and end_min >= 900:
             pm_snack = True
-        # フォールバック: 時間不明ならデフォルトで午後おやつ
         if not am_snack and not pm_snack:
             pm_snack = True
 
@@ -355,6 +568,7 @@ def _parse_time_cell(val) -> str | None:
         return val.strftime("%H:%M")
 
     if isinstance(val, datetime):
+        # datetime with only time part (e.g., 1900-01-01 09:00:00 from Excel)
         return val.strftime("%H:%M")
 
     if isinstance(val, (int, float)):
@@ -429,15 +643,20 @@ def _extract_name_from_filename(filename: str) -> str | None:
     name = os.path.splitext(filename)[0]
 
     # Remove common suffixes
-    for suffix in ["_予定表", "_予定", "_利用予定", "予定表", "利用予定表", "_schedule"]:
+    for suffix in ["_予定表", "_予定", "_利用予定", "予定表", "利用予定表", "_schedule",
+                   "児童利用予定表", "児童利用"]:
         name = name.replace(suffix, "")
 
     # Remove year/month patterns
     name = re.sub(r'\d{4}[年/\-]?\d{1,2}[月]?', '', name)
     name = re.sub(r'\d{1,2}月', '', name)
 
+    # Remove leading/trailing numbers and spaces
+    name = re.sub(r'^\d+', '', name)
+    name = re.sub(r'\(\d+\)$', '', name)  # Remove (1), (2) etc.
+
     # Clean up
-    name = name.strip("_- 　")
+    name = name.strip("_- 　()")
 
     if len(name) >= 2:
         return normalize_name(name)
