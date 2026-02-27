@@ -50,7 +50,7 @@ from writers.pdf_writer import generate_parent_statements
 from storage import FileStorage
 
 # === Constants ===
-VERSION = "3.8"
+VERSION = "3.9"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB per file
 
 app = FastAPI(title="あゆっこ Generator API", version=VERSION)
@@ -204,7 +204,6 @@ async def generate(
             # ═══════════════════════════════════════════
 
             output_files = {}
-            fatal_corruption = False
 
             # ── 4-A: Daily report Excel (if template provided) ──
             if tmpl_path:
@@ -222,30 +221,15 @@ async def generate(
                         "category": "university",
                     }
                 else:
-                    # Check if this is a corruption abort
-                    if "破損検出" in str(write_result.get("error", "")):
-                        fatal_corruption = True
+                    is_corruption = "破損検出" in str(write_result.get("error", ""))
                     warnings.append({
                         "level": "error",
                         "child_name": None,
                         "message": f"日報テンプレートの書き込みに失敗: {write_result['error']}",
-                        "suggestion": "テンプレートファイルを確認してください",
+                        "suggestion": "テンプレートに #REF! エラーが含まれています。Excelで開いて修正してください。日報以外の出力（PDF等）は正常に生成されます。" if is_corruption else "テンプレートファイルを確認してください",
                     })
                     stats["total_errors"] += 1
                 warnings.extend(write_result.get("warnings", []))
-
-            # ★ FATAL CORRUPTION GUARD — abort entire job
-            if fatal_corruption:
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "error": "テンプレート破損検出: #REF!/#VALUE! エラーが検出されました。安全のため全出力を中止します。",
-                        "fatal": True,
-                        "warnings": warnings,
-                        "stats": stats,
-                        "submission_report": submission_report,
-                    }
-                )
 
             # ── 4-B: Billing detail Excel (if template provided) ──
             if billing_tmpl_path and os.path.exists(billing_tmpl_path):
@@ -261,18 +245,14 @@ async def generate(
                         "category": "accounting",
                     }
                 elif billing_result:
-                    if "破損検出" in str(billing_result.get("error", "")):
-                        # Fatal corruption in billing template too
-                        return JSONResponse(
-                            status_code=422,
-                            content={
-                                "error": "保育料明細テンプレート破損検出。安全のため全出力を中止します。",
-                                "fatal": True,
-                                "warnings": warnings,
-                                "stats": stats,
-                                "submission_report": submission_report,
-                            }
-                        )
+                    is_billing_corruption = "破損検出" in str(billing_result.get("error", ""))
+                    if is_billing_corruption:
+                        warnings.append({
+                            "level": "error",
+                            "child_name": None,
+                            "message": f"保育料明細テンプレートに破損検出。このファイルはスキップしますが、他の出力は正常に生成されます。",
+                            "suggestion": "テンプレートに #REF! エラーが含まれています。Excelで開いて修正してください。",
+                        })
                     warnings.extend(billing_result.get("warnings", []))
                     stats["total_errors"] += 1
 
@@ -617,6 +597,18 @@ async def dashboard(
 
                 # Count children — in schedule-only mode, include plan_only in counts
                 count_base = all_day_facts if is_schedule_only else day_facts
+
+                # ★ Age-class breakdown: count by age_class from children_detail
+                age_counts = {}
+                temp_count = 0
+                for cd in children_detail:
+                    ac = cd.get("age_class")
+                    enroll = cd.get("enrollment_type", "")
+                    if enroll == "一時":
+                        temp_count += 1
+                    elif ac is not None:
+                        age_counts[ac] = age_counts.get(ac, 0) + 1
+
                 daily_summary.append({
                     "day": day,
                     "weekday": weekday,
@@ -625,6 +617,13 @@ async def dashboard(
                     "planned_absent": 0 if is_schedule_only else len(plan_only),
                     "total_with_plans": len(all_day_facts),
                     "is_schedule_only": is_schedule_only,
+                    "age_0_count": age_counts.get(0, 0),
+                    "age_1_count": age_counts.get(1, 0),
+                    "age_2_count": age_counts.get(2, 0),
+                    "age_3_count": age_counts.get(3, 0),
+                    "age_4_count": age_counts.get(4, 0),
+                    "age_5_count": age_counts.get(5, 0),
+                    "temp_count": temp_count,
                     "lunch_count": sum(1 for f in count_base if f.get("has_lunch")),
                     "am_snack_count": sum(1 for f in count_base if f.get("has_am_snack")),
                     "pm_snack_count": sum(1 for f in count_base if f.get("has_pm_snack")),

@@ -42,10 +42,39 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '4.9',
+    version: '5.1',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
-    phase: 'Dashboard + Generator',
+    phase: 'Dashboard + Generator (Direct Mode)',
     timestamp: new Date().toISOString(),
+  });
+});
+
+// Generator config: tell frontend where the Python Generator is
+// In sandbox: same host, port 8787. In production: could be different.
+app.get('/api/config', (c) => {
+  // Build generator URL based on current request origin
+  const url = new URL(c.req.url);
+  // In sandbox, the generator runs on port 8787 of the same host
+  // For external access via sandbox URL, replace port 3000 with 8787
+  const host = url.hostname;
+  const protocol = url.protocol;
+  
+  // If accessed via sandbox URL (*.sandbox.novita.ai), construct 8787 URL
+  let generatorUrl = '';
+  if (host.startsWith('3000-')) {
+    // Replace 3000- prefix with 8787- and always use https for sandbox
+    const genHost = host.replace(/^3000-/, '8787-');
+    generatorUrl = `https://${genHost}`;
+  } else if (host === 'localhost' || host === '127.0.0.1') {
+    generatorUrl = `http://${host}:8787`;
+  } else {
+    // Fallback: proxy mode (use Hono proxy endpoints)
+    generatorUrl = '';
+  }
+  
+  return c.json({
+    generator_url: generatorUrl,
+    mode: generatorUrl ? 'direct' : 'proxy',
   });
 });
 
@@ -92,7 +121,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v4.9</p>
+          <p class="text-xs text-gray-500">業務自動化システム v5.1</p>
         </div>
       </div>
       <div class="flex items-center gap-3">

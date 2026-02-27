@@ -1,15 +1,15 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v4.8
+ * あゆっこ業務自動化 — Frontend Application v5.1
  * 
- * Architecture: UI → Hono proxy → Python Generator
+ * Architecture: UI → Python Generator (Direct Mode) / Hono proxy (Fallback)
  * 
- * v4.8: ダッシュボード予定表示完全対応 + ソート修正
- *   - 予定のみモードで食事フラグもキャリー表示
- *   - 欠席園児(absent)にも予定の食事フラグを保持
- *   - おやつ列(K)を朝/午後に時間帯推定で分離
- *   - ソートにage_class使用（ぞう組等の動物名クラスでも正しくソート）
- *   - scoped view (今日/明日/今週) でplannedステータスを正しく表示
- *   - 日詳細テーブルヘッダーをモードに応じて切替
+ * v5.1: Direct Generator通信 + テンプレート破損耐性 + 年齢別人数表示
+ *   - generate/dashboardをPython Generator直接呼出し（Hono proxyタイムアウト解消）
+ *   - テンプレート破損時も日報スキップしPDF生成続行
+ *   - ダッシュボード詳細に0歳/1歳/2歳/一時の人数表示
+ *   - カレンダーセルに年齢別人数バッジ表示
+ *
+ * v4.8 (retained): ダッシュボード予定表示完全対応 + ソート修正
  *
  * v4.7 (retained): 予定プレビュー + 表示順改善 + 報告時間表示
  *   - 予定表のみアップロードで次月予定プレビュー可能
@@ -62,6 +62,23 @@ const FILE_RULES = Object.freeze({
 });
 
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB default
+
+// Generator URL (auto-detected on init, fallback to proxy)
+let GENERATOR_URL = ''; // '' means use Hono proxy
+let GENERATOR_MODE = 'proxy'; // 'direct' or 'proxy'
+
+/**
+ * Get the URL for generator endpoints.
+ * Direct mode: Python Generator at port 8787 (fast, no proxy overhead)
+ * Proxy mode: Through Hono at /api/jobs/* (fallback)
+ */
+function getGenerateUrl(endpoint) {
+  if (GENERATOR_URL) {
+    return `${GENERATOR_URL}/${endpoint}`;
+  }
+  // Proxy fallback
+  return `/api/jobs/${endpoint}`;
+}
 
 // ═══════════════════════════════════════════
 // HELPERS — HTML ESCAPE (XSS protection)
@@ -786,7 +803,7 @@ async function loadDashboard() {
     }
     state.files.schedule.forEach(f => formData.append('schedule_files', f));
 
-    const response = await fetch('/api/jobs/dashboard', {
+    const response = await fetch(getGenerateUrl('dashboard'), {
       method: 'POST',
       body: formData,
     });
@@ -1020,6 +1037,17 @@ function renderCalendarGrid(data) {
       mealLine = `<div class="flex gap-1.5 mt-0.5 text-[10px] text-gray-500">${mealParts.join('')}</div>`;
     }
 
+    // Age-class line for calendar cell
+    let ageLine = '';
+    const ageParts = [];
+    if (ds.age_0_count > 0) ageParts.push(`<span class="text-pink-500" title="0歳 ${ds.age_0_count}名">0歳${ds.age_0_count}</span>`);
+    if (ds.age_1_count > 0) ageParts.push(`<span class="text-sky-500" title="1歳 ${ds.age_1_count}名">1歳${ds.age_1_count}</span>`);
+    if (ds.age_2_count > 0) ageParts.push(`<span class="text-emerald-500" title="2歳 ${ds.age_2_count}名">2歳${ds.age_2_count}</span>`);
+    if (ds.temp_count > 0) ageParts.push(`<span class="text-rose-500" title="一時 ${ds.temp_count}名">一時${ds.temp_count}</span>`);
+    if (ageParts.length > 0) {
+      ageLine = `<div class="flex gap-1.5 mt-0.5 text-[9px] text-gray-400">${ageParts.join('')}</div>`;
+    }
+
     // Special indicators
     let indicators = '';
     const indParts = [];
@@ -1060,6 +1088,7 @@ function renderCalendarGrid(data) {
         </div>
         ${childPreview}
         ${mealLine}
+        ${ageLine}
         ${indicators}
       </div>
     `;
@@ -1153,7 +1182,7 @@ function renderDayDetail(day, ds) {
   // Summary counters — 4 meals + specials
   const summaryLabel = isScheduleOnly ? '予定' : '来園';
   let summaryHtml = `
-    <div class="grid grid-cols-6 gap-1.5 mb-3">
+    <div class="grid grid-cols-6 gap-1.5 mb-2">
       <div class="bg-blue-50 rounded-lg px-1.5 py-1.5 text-center">
         <div class="text-lg font-bold text-blue-700">${ds.total_children}</div>
         <div class="text-[10px] text-blue-500">${summaryLabel}</div>
@@ -1180,6 +1209,24 @@ function renderDayDetail(day, ds) {
       </div>
     </div>
   `;
+
+  // ★ Age-class breakdown
+  const ageItems = [];
+  if (ds.age_0_count > 0) ageItems.push(`<span class="bg-pink-100 text-pink-700 px-2.5 py-1 rounded-full text-[11px] font-semibold">0歳 ${ds.age_0_count}名</span>`);
+  if (ds.age_1_count > 0) ageItems.push(`<span class="bg-sky-100 text-sky-700 px-2.5 py-1 rounded-full text-[11px] font-semibold">1歳 ${ds.age_1_count}名</span>`);
+  if (ds.age_2_count > 0) ageItems.push(`<span class="bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-full text-[11px] font-semibold">2歳 ${ds.age_2_count}名</span>`);
+  if (ds.age_3_count > 0) ageItems.push(`<span class="bg-violet-100 text-violet-700 px-2.5 py-1 rounded-full text-[11px] font-semibold">3歳 ${ds.age_3_count}名</span>`);
+  if (ds.age_4_count > 0) ageItems.push(`<span class="bg-teal-100 text-teal-700 px-2.5 py-1 rounded-full text-[11px] font-semibold">4歳 ${ds.age_4_count}名</span>`);
+  if (ds.age_5_count > 0) ageItems.push(`<span class="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-full text-[11px] font-semibold">5歳 ${ds.age_5_count}名</span>`);
+  if (ds.temp_count > 0) ageItems.push(`<span class="bg-rose-100 text-rose-700 px-2.5 py-1 rounded-full text-[11px] font-semibold">一時 ${ds.temp_count}名</span>`);
+  if (ageItems.length > 0) {
+    summaryHtml += `
+      <div class="flex flex-wrap gap-1.5 mb-2 px-0.5">
+        <span class="text-[10px] text-gray-400 self-center mr-0.5">年齢別:</span>
+        ${ageItems.join('')}
+      </div>
+    `;
+  }
 
   // Special counts badges
   const specials = [];
@@ -1402,7 +1449,7 @@ async function startGeneration() {
     updateProgress(10, `ルクミーデータ送信中...`);
     updateProgress(15, `${state.files.schedule.length}件の予定表を処理中...`);
 
-    const response = await fetch('/api/jobs/generate', {
+    const response = await fetch(getGenerateUrl('generate'), {
       method: 'POST',
       body: formData,
     });
@@ -1926,6 +1973,19 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load template registration status from localStorage
   loadTemplateStatus();
   renderTemplateStatusUI();
+
+  // Auto-detect generator URL (direct mode vs proxy)
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    if (cfg && cfg.generator_url) {
+      GENERATOR_URL = cfg.generator_url;
+      GENERATOR_MODE = cfg.mode || 'direct';
+      console.log(`[Ayukko] Generator: ${GENERATOR_MODE} mode → ${GENERATOR_URL}`);
+    } else {
+      console.log('[Ayukko] Generator: proxy mode (through Hono)');
+    }
+  }).catch(e => {
+    console.warn('[Ayukko] Config fetch failed, using proxy mode:', e);
+  });
 
   // Health check
   fetch('/api/health').then(r => r.json()).then(data => {
