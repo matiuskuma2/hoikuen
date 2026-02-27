@@ -41,7 +41,9 @@ templateRoutes.post('/upload', async (c) => {
     return c.json({ error: `テンプレートタイプは ${validTypes.join(', ')} のいずれかです` }, 400);
   }
 
-  const r2Key = `templates/${nurseryId}/${templateType}/${file.name}`;
+  // ★ Fix #25: Sanitize filename to prevent path traversal
+  const safeName = file.name.replace(/[/\\..]/g, '_').replace(/\.\./g, '_');
+  const r2Key = `templates/${nurseryId}/${templateType}/${safeName}`;
   const arrayBuffer = await file.arrayBuffer();
   await r2.put(r2Key, arrayBuffer);
 

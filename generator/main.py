@@ -1,5 +1,5 @@
 """
-あゆっこ保育園 業務自動化システム — Python Generator API v3.3
+あゆっこ保育園 業務自動化システム — Python Generator API v4.0
 FastAPI server that receives uploaded files and returns generated ZIP + meta JSON
 
 Architecture:
@@ -50,14 +50,16 @@ from writers.pdf_writer import generate_parent_statements
 from storage import FileStorage
 
 # === Constants ===
-VERSION = "3.9"
+VERSION = "4.0"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB per file
 
 app = FastAPI(title="あゆっこ Generator API", version=VERSION)
 
+# ★ CORS: sandbox/開発環境は全オリジン許可。本番デプロイ時は ALLOWED_ORIGINS 環境変数で制限すること。
+_allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -98,6 +100,12 @@ async def generate(
     Main generation endpoint.
     Receives uploaded files, processes them, returns ZIP.
     """
+    # ★ Input validation: year/month boundary check
+    if not (2000 <= year <= 2100):
+        raise HTTPException(status_code=400, detail=f"年が範囲外です: {year} (2000-2100)")
+    if not (1 <= month <= 12):
+        raise HTTPException(status_code=400, detail=f"月が範囲外です: {month} (1-12)")
+
     warnings: list[dict] = []
     stats = {
         "children_total": 0,
@@ -291,8 +299,12 @@ async def generate(
                         zf.write(pdf_info["path"], f"03_保護者配布/{pdf_info['name']}")
 
                 # Meta JSON (root level)
+                # ★ Fix #11: 最終集計 — 途中のインクリメント分 (L231,257) と warnings集計の大きい方を採用
                 stats["total_warnings"] = len([w for w in warnings if w.get("level") != "error"])
-                stats["total_errors"] = len([w for w in warnings if w.get("level") == "error"])
+                stats["total_errors"] = max(
+                    stats.get("total_errors", 0),
+                    len([w for w in warnings if w.get("level") == "error"])
+                )
 
                 meta = {
                     "generated_at": datetime.now().isoformat(),
@@ -365,8 +377,8 @@ async def generate(
         return JSONResponse(
             status_code=500,
             content={
-                "error": str(e),
-                "traceback": traceback.format_exc(),
+                # ★ traceback はサーバーログにのみ出力。クライアントには返さない（内部情報漏洩防止）
+                "error": f"内部エラーが発生しました: {type(e).__name__}: {str(e)}",
                 "warnings": warnings,
                 "stats": stats,
             }
@@ -457,6 +469,12 @@ async def dashboard(
       - ルクミー + 予定表 → 実績＋予定の完全ビュー
       - 予定表のみ → 次月の利用予定プレビュー
     """
+    # ★ Input validation: year/month boundary check
+    if not (2000 <= year <= 2100):
+        raise HTTPException(status_code=400, detail=f"年が範囲外です: {year} (2000-2100)")
+    if not (1 <= month <= 12):
+        raise HTTPException(status_code=400, detail=f"月が範囲外です: {month} (1-12)")
+
     warnings: list[dict] = []
 
     try:
@@ -467,7 +485,8 @@ async def dashboard(
             attendance_records = []
             lukumi_children = []
             if lukumi_file and lukumi_file.filename:
-                lukumi_bytes = await lukumi_file.read()
+                # ★ Fix #3: サイズチェックを _read_upload_safe 経由で実施
+                lukumi_bytes = await _read_upload_safe(lukumi_file, "ルクミーデータ")
                 if len(lukumi_bytes) > 0:
                     lukumi_path = os.path.join(tmpdir, lukumi_file.filename or "lukumi.xlsx")
                     with open(lukumi_path, "wb") as f:
@@ -589,8 +608,8 @@ async def dashboard(
                     })
 
                 # Weekday
-                import datetime as dt_mod
-                d = dt_mod.date(year, month, day)
+                from datetime import date as _date_cls
+                d = _date_cls(year, month, day)
                 weekdays_jp = ['月', '火', '水', '木', '金', '土', '日']
                 weekday = weekdays_jp[d.weekday()]
                 is_weekend = d.weekday() >= 5

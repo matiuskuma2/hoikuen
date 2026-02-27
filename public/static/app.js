@@ -1,9 +1,11 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v5.1
+ * あゆっこ業務自動化 — Frontend Application v5.2
  * 
  * Architecture: UI → Python Generator (Direct Mode) / Hono proxy (Fallback)
  * 
- * v5.1: Direct Generator通信 + テンプレート破損耐性 + 年齢別人数表示
+ * v5.2: QAチェックリスト対応 (input safety, error handling, security improvements)
+ *
+ * v5.1 (retained): Direct Generator通信 + テンプレート破損耐性 + 年齢別人数表示
  *   - generate/dashboardをPython Generator直接呼出し（Hono proxyタイムアウト解消）
  *   - テンプレート破損時も日報スキップしPDF生成続行
  *   - ダッシュボード詳細に0歳/1歳/2歳/一時の人数表示

@@ -18,6 +18,7 @@
 import os
 import copy
 import shutil
+import calendar
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from engine.name_matcher import normalize_name
@@ -177,7 +178,6 @@ def _write_attendance_sheet(wb, children, facts_by_key, year, month, warnings):
         child_id = matched_child.get("lukumi_id", "")
         
         # Write each day
-        import calendar
         days_in_month = calendar.monthrange(year, month)[1]
         
         for day in range(1, days_in_month + 1):
@@ -214,12 +214,43 @@ def _write_jisseki_sheet(wb, children, facts_by_key, att_by_key, year, month, wa
     
     ws = wb[sheet_name]
     
-    import calendar
     days_in_month = calendar.monthrange(year, month)[1]
     
-    for child_idx, child in enumerate(children):
+    # ★ Fix #10: child_idx ではなくテンプレートの行名でマッチング
+    # テンプレートの园児名行を探索して、データ行を特定する
+    # フォールバック: 既存のインデックス方式も保持（テンプレートに名前セルがない場合）
+    child_row_map = {}  # child_id -> base_row
+    
+    # First pass: try to find child names in column D or E
+    for row_idx in range(7, min(7 + len(children) * 4 + 20, ws.max_row + 1), 4):
+        cell_name = ws.cell(row=row_idx, column=4).value or ws.cell(row=row_idx, column=5).value
+        if not cell_name:
+            continue
+        name_norm = normalize_name(str(cell_name))
+        for child in children:
+            cid = child.get("lukumi_id", "")
+            if cid in child_row_map:
+                continue
+            if normalize_name(child["name"]) == name_norm or \
+               normalize_name(child["name"]).replace(' ', '') == name_norm.replace(' ', ''):
+                child_row_map[cid] = row_idx
+                break
+    
+    # Fallback: for children not found by name, use index-based mapping
+    used_rows = set(child_row_map.values())
+    for child_idx_fb, child in enumerate(children):
+        cid = child.get("lukumi_id", "")
+        if cid not in child_row_map:
+            fallback_row = 7 + child_idx_fb * 4
+            if fallback_row not in used_rows:
+                child_row_map[cid] = fallback_row
+                used_rows.add(fallback_row)
+    
+    for child in children:
         child_id = child.get("lukumi_id", "")
-        base_row = 7 + child_idx * 4
+        base_row = child_row_map.get(child_id)
+        if base_row is None:
+            continue  # No row found for this child
         
         for day in range(1, days_in_month + 1):
             col = 7 + (day - 1)  # G=7
@@ -276,7 +307,6 @@ def _write_hoiku_jikan_sheet(wb, children, facts_by_key, all_plans, year, month,
     
     ws = wb[sheet_name]
     
-    import calendar
     days_in_month = calendar.monthrange(year, month)[1]
     
     for child_idx, child in enumerate(children):
@@ -375,11 +405,18 @@ def _pre_flight_corruption_check(wb) -> list[dict]:
 
 
 def _time_to_serial(time_str: str) -> float:
-    """Convert HH:MM to Excel time serial (0.0 - 1.0)"""
+    """Convert HH:MM to Excel time serial (0.0 - 1.0). Returns 0.0 on invalid input."""
+    if not time_str or not isinstance(time_str, str):
+        return 0.0
     parts = time_str.split(":")
-    h = int(parts[0])
-    m = int(parts[1])
-    return (h * 60 + m) / (24 * 60)
+    if len(parts) < 2:
+        return 0.0
+    try:
+        h = int(parts[0])
+        m = int(parts[1])
+        return (h * 60 + m) / (24 * 60)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _fmt_time_nolead(time_str: str) -> str:

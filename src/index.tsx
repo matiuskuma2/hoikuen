@@ -42,7 +42,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '5.1',
+    version: '5.2',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Dashboard + Generator (Direct Mode)',
     timestamp: new Date().toISOString(),
@@ -121,7 +121,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v5.1</p>
+          <p class="text-xs text-gray-500">業務自動化システム v5.2</p>
         </div>
       </div>
       <div class="flex items-center gap-3">

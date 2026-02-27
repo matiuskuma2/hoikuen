@@ -103,8 +103,14 @@ def generate_parent_statements(
                 "child_name": child_name,
             })
         except Exception as e:
-            # Skip this child's PDF but continue
+            # ★ Fix #15: Log AND return warning (not silently skip)
             print(f"PDF generation failed for {child_name}: {e}")
+            pdf_files.append({
+                "path": "",
+                "name": filename,
+                "child_name": child_name,
+                "error": str(e),
+            })
     
     return pdf_files
 
@@ -164,6 +170,7 @@ def _generate_single_pdf(
     # Daily table
     weekdays = ['月', '火', '水', '木', '金', '土', '日']
     import calendar
+    import datetime as _dt_mod
     
     header = ['日', '曜', '予定登園', '予定降園', '実績登園', '実績降園', '時間', '状態']
     daily_data = [header]
@@ -179,8 +186,7 @@ def _generate_single_pdf(
                 break
         
         # Day of week
-        import datetime
-        dt = datetime.date(year, month, day)
+        dt = _dt_mod.date(year, month, day)
         dow = weekdays[dt.weekday()]
         
         if fact and fact["attendance_status"] != "absent_no_plan":

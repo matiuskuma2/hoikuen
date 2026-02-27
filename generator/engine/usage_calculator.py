@@ -16,6 +16,8 @@ Usage Facts 計算エンジン (Python版) — v3.3
   ※ 実提供と希望の区別は将来拡張で対応。
 """
 
+import calendar
+import math
 from engine.name_matcher import normalize_name
 
 # Default pricing rules
@@ -28,9 +30,16 @@ DEFAULT_TIME_BOUNDARIES = {
 
 
 def to_minutes(time_str: str) -> int:
-    """HH:MM → total minutes"""
+    """HH:MM → total minutes. Returns 0 on invalid input."""
+    if not time_str or not isinstance(time_str, str):
+        return 0
     parts = time_str.split(":")
-    return int(parts[0]) * 60 + int(parts[1])
+    if len(parts) < 2:
+        return 0
+    try:
+        return int(parts[0]) * 60 + int(parts[1])
+    except (ValueError, TypeError):
+        return 0
 
 
 def format_time_no_leading_zero(time_str: str) -> str:
@@ -76,7 +85,6 @@ def compute_all_usage_facts(
                 break
         
         # Process each day
-        import calendar
         days_in_month = calendar.monthrange(year, month)[1]
         
         for day in range(1, days_in_month + 1):
@@ -222,7 +230,6 @@ def _compute_single_fact(
     # Step 5: Spot care blocks
     enrollment = child.get("enrollment_type", "月極")
     if enrollment == "一時" and fact["billing_minutes"] is not None:
-        import math
         fact["spot_30min_blocks"] = math.ceil(fact["billing_minutes"] / 30)
     
     # Step 6: Meal flags

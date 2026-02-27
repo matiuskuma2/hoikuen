@@ -20,7 +20,7 @@ module.exports = {
       name: 'ayukko-generator',
       script: 'python3',
       args: '-m uvicorn main:app --host 0.0.0.0 --port 8787',
-      cwd: './generator',
+      cwd: __dirname + '/generator',
       env: {
         PYTHONPATH: '.'
       },

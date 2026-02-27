@@ -127,8 +127,11 @@ def _generate_for_child(
     lines = []
     child_id = child.get("lukumi_id", "")
     child_name = child.get("name", "")
-    year = facts[0]["year"] if facts else 0
-    month = facts[0]["month"] if facts else 0
+    # ★ Fix #6: facts が空の場合の安全なアクセス
+    if not facts:
+        return lines  # No attendance → no charges
+    year = facts[0]["year"]
+    month = facts[0]["month"]
     age_group = get_age_group(child.get("age_class"))
     child_order = str(child.get("child_order", 1))
     
