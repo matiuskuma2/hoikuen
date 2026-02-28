@@ -4,6 +4,11 @@ A4縦、園児ごとに1ページ
 
 構成:
   タイトル → 年月 → 園児名 → 日次テーブル → 請求テーブル → 合計
+
+v5.0:
+  - フォント修正: WQY Micro Hei使用（日本語+数字+記号を完全カバー）
+  - DroidSansFallbackFullはASCII/数字が欠落するため不可
+  - 朝食（breakfast）行の追加
 """
 
 import os
@@ -24,17 +29,19 @@ def _ensure_font():
     if _FONT_REGISTERED:
         return
     
-    # Try TrueType fonts first (ReportLab cannot handle CFF/PostScript outlines in .ttc)
+    # ★ v5.0: フォント優先順位を修正
+    # WQY Micro Hei: 日本語+ASCII+数字+記号を全てカバー（最優先）
+    # DroidSansFallbackFull: CJK専用でASCII/数字が欠落するため使用不可
+    # NotoSansCJK: PostScript outlines のため ReportLab 非対応
     font_paths = [
-        # TrueType fonts (compatible with ReportLab)
-        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", None),
+        # ★ WQY Micro Hei (最優先 — 日本語+数字+記号の完全カバーを確認済み)
+        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+        # WQY Zen Hei (alternative)
+        ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+        # Arphic fonts (TrueType, compatible)
         ("/usr/share/fonts/truetype/arphic/uming.ttc", None),
         ("/usr/share/fonts/truetype/arphic/ukai.ttc", None),
-        # CJK Noto fonts — PostScript outlines, may fail with ReportLab
-        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
-        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 0),
-        ("/usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf", None),
-        ("/usr/share/fonts/google-noto-cjk/NotoSansCJKjp-Regular.otf", None),
+        # ★ DroidSansFallbackFull は意図的にスキップ（ASCII欠落問題あり）
     ]
     
     for path_info in font_paths:
@@ -231,6 +238,7 @@ def _generate_single_pdf(
         "extension": "延長保育料",
         "night": "夜間保育料",
         "sick": "病児保育料",
+        "breakfast": "朝食代",
         "lunch": "昼食代",
         "am_snack": "朝おやつ代",
         "pm_snack": "午後おやつ代",

@@ -1,28 +1,18 @@
 """
-あゆっこ保育園 業務自動化システム — Python Generator API v4.0
+あゆっこ保育園 業務自動化システム — Python Generator API v5.0
 FastAPI server that receives uploaded files and returns generated ZIP + meta JSON
 
 Architecture:
   Hono (UI/API, port 3000) → HTTP → Python Generator (port 8787)
 
-Endpoints:
-  POST /generate  — multipart files → ZIP response
-  POST /preview   — quick parse + matching check → JSON
-  GET  /health    — health check
-
-Phase B integration:
-  B-0: Name normalization SSOT
-  B-1: Lukumi attendance parser (column auto-detect, validation)
-  B-2: Children master parser (roster from template)
-  B-3: Schedule plans parser (multiple files, month check)
-  B-4: Matching & submission report
-
-v3.2 changes:
-  - parse_lukumi now returns 3 values (records, children, warnings)
-  - parse_roster now returns 2 values (children, warnings)
-  - parse_multiple_schedules aggregates all schedule files
-  - Submission report included in _meta.json
-  - Template corruption guard (abort on #REF/#VALUE detection)
+v5.0 changes:
+  - 料金体系を保育料案内PDFに完全準拠
+  - 延長時間帯: 7:00-7:30, 20:00-21:00 (18:00廃止)
+  - 早朝・延長料金: 年齢別 (0~2歳¥300, 3歳¥200, 4~5歳¥150)
+  - 夜間保育料: 月極¥2,500 / 一時¥3,000 (年齢別→一律)
+  - 朝食代¥150追加
+  - PDF: WQY Micro Heiフォント (数字表示修正)
+  - 生年月日ベースの年齢クラス判定
 """
 
 import os
@@ -32,7 +22,7 @@ import zipfile
 import tempfile
 import traceback
 import calendar
-from datetime import datetime
+from datetime import datetime, date as _date_cls
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -43,15 +33,36 @@ from parsers.schedule_parser import parse_schedule_plans, parse_multiple_schedul
 from parsers.roster_parser import parse_roster
 from engine.name_matcher import normalize_name, match_children, generate_submission_report
 from engine.usage_calculator import compute_all_usage_facts
-from engine.charge_calculator import generate_all_charge_lines, _detect_enrollment_type
+from engine.charge_calculator import generate_all_charge_lines, _detect_enrollment_type, get_age_class_from_birth_date
 from writers.daily_report_writer import write_daily_report
 from writers.billing_writer import write_billing_detail
 from writers.pdf_writer import generate_parent_statements
 from storage import FileStorage
 
 # === Constants ===
-VERSION = "4.0"
+VERSION = "5.0"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB per file
+
+
+def _get_fiscal_year(year: int, month: int) -> int:
+    """年月から年度を計算。4月始まり。"""
+    return year if month >= 4 else year - 1
+
+
+def _apply_age_class_from_birth_date(children: list[dict], year: int, month: int) -> None:
+    """
+    生年月日から年齢クラスを判定して設定する。
+    既にage_classが設定されていない場合のみ適用。
+    ★ スケジュールの情報をルクミーより優先する。
+    """
+    fiscal_year = _get_fiscal_year(year, month)
+    for child in children:
+        birth_date = child.get("birth_date")
+        if birth_date:
+            computed_age_class = get_age_class_from_birth_date(birth_date, fiscal_year)
+            if computed_age_class is not None:
+                # 生年月日が存在する場合は常に上書き（最も信頼性が高い）
+                child["age_class"] = computed_age_class
 
 app = FastAPI(title="あゆっこ Generator API", version=VERSION)
 
@@ -194,6 +205,9 @@ async def generate(
             stats["children_total"] = len(children)
             stats["schedules_matched"] = submission_report["summary"]["submitted"]
             stats["schedules_unmatched"] = len(unmatched)
+
+            # ★ v5.0: 生年月日から年齢クラスを判定
+            _apply_age_class_from_birth_date(children, year, month)
 
             # ═══════════════════════════════════════════
             # Phase 3: CALCULATING
@@ -546,6 +560,9 @@ async def dashboard(
                     "suggestion": "実績データを表示するにはルクミー登降園データもアップロードしてください",
                 })
 
+            # ★ v5.0: 生年月日から年齢クラスを判定
+            _apply_age_class_from_birth_date(children, year, month)
+
             # Compute usage facts
             usage_facts = compute_all_usage_facts(
                 children, all_plans, attendance_records, year, month
@@ -596,6 +613,7 @@ async def dashboard(
                         "billing_minutes": f.get("billing_minutes"),
                         "status": status,
                         "enrollment_type": enrollment,
+                        "has_breakfast": f.get("has_breakfast", 0),
                         "has_lunch": f.get("has_lunch", 0),
                         "has_am_snack": f.get("has_am_snack", 0),
                         "has_pm_snack": f.get("has_pm_snack", 0),
@@ -608,7 +626,6 @@ async def dashboard(
                     })
 
                 # Weekday
-                from datetime import date as _date_cls
                 d = _date_cls(year, month, day)
                 weekdays_jp = ['月', '火', '水', '木', '金', '土', '日']
                 weekday = weekdays_jp[d.weekday()]
@@ -643,6 +660,7 @@ async def dashboard(
                     "age_4_count": age_counts.get(4, 0),
                     "age_5_count": age_counts.get(5, 0),
                     "temp_count": temp_count,
+                    "breakfast_count": sum(1 for f in count_base if f.get("has_breakfast")),
                     "lunch_count": sum(1 for f in count_base if f.get("has_lunch")),
                     "am_snack_count": sum(1 for f in count_base if f.get("has_am_snack")),
                     "pm_snack_count": sum(1 for f in count_base if f.get("has_pm_snack")),

@@ -21,11 +21,18 @@ import math
 from engine.name_matcher import normalize_name
 
 # Default pricing rules
+# 保育料案内 準拠:
+#   通常保育: 7:30〜20:00
+#   早朝保育: 7:00〜7:30（通常保育の前）
+#   延長保育: 20:00〜21:00（通常保育の後）
+#   一時保育: 7:30〜18:00
+# ★ 18:00 は一時保育の終了時間であり、延長開始ではない。
+#   月極園児の延長は 20:00〜21:00 のみ。
 DEFAULT_TIME_BOUNDARIES = {
     "early_start": "07:00",
     "early_end": "07:30",
-    "extension_start": "18:00",
-    "night_start": "20:00",
+    "extension_start": "20:00",  # ★ 修正: 18:00→20:00（保育料案内準拠）
+    "night_start": "21:00",      # ★ 修正: 20:00→21:00（夜間は延長の後）
 }
 
 
@@ -123,6 +130,7 @@ def _compute_single_fact(
         "is_night": 0,
         "is_sick": 0,
         "spot_30min_blocks": 0,
+        "has_breakfast": 0,
         "has_lunch": 0,
         "has_am_snack": 0,
         "has_pm_snack": 0,
@@ -150,6 +158,7 @@ def _compute_single_fact(
         fact["exception_notes"] = "予定あり・実績なし（欠席）"
         # ★ 予定表の食事フラグをキャリーする（ダッシュボード予定プレビュー用）
         #   実績なしでも予定の食事情報は表示に必要
+        fact["has_breakfast"] = plan.get("breakfast_flag", 0)
         fact["has_lunch"] = plan.get("lunch_flag", 0)
         fact["has_am_snack"] = plan.get("am_snack_flag", 0)
         fact["has_pm_snack"] = plan.get("pm_snack_flag", 0)
@@ -223,8 +232,11 @@ def _compute_single_fact(
     ext_start = to_minutes(DEFAULT_TIME_BOUNDARIES["extension_start"])
     night_start = to_minutes(DEFAULT_TIME_BOUNDARIES["night_start"])
     
+    # ★ 早朝: 7:00〜7:30 に登園した場合
     fact["is_early_morning"] = 1 if (start_min < early_end and start_min >= early_start) else 0
+    # ★ 延長: 20:00〜21:00 に在園した場合（保育料案内: 早朝・延長 = 7:00-7:30 と 20:00-21:00）
     fact["is_extension"] = 1 if (end_min is not None and end_min > ext_start) else 0
+    # ★ 夜間: 21:00 以降に在園した場合
     fact["is_night"] = 1 if (end_min is not None and end_min > night_start) else 0
     
     # Step 5: Spot care blocks
@@ -239,11 +251,15 @@ def _compute_single_fact(
     #   早退で提供時間前に帰った場合はフラグを0に修正
     if fact["attendance_status"] in ("present", "late_arrive"):
         if has_plan:
+            fact["has_breakfast"] = plan.get("breakfast_flag", 0)
             fact["has_lunch"] = plan.get("lunch_flag", 0)
             fact["has_am_snack"] = plan.get("am_snack_flag", 0)
             fact["has_pm_snack"] = plan.get("pm_snack_flag", 0)
             fact["has_dinner"] = plan.get("dinner_flag", 0)
         else:
+            # Walk-in: 在園時間帯から推定
+            # ★ 朝食は 7:30前登園の場合に推定（早朝保育利用時）
+            fact["has_breakfast"] = 1 if start_min < 480 else 0  # 8:00前
             fact["has_lunch"] = 1 if (start_min <= 720 and (end_min or 0) >= 720) else 0
             fact["has_am_snack"] = 1 if start_min <= 600 else 0
             fact["has_pm_snack"] = 1 if (end_min or 0) >= 900 else 0

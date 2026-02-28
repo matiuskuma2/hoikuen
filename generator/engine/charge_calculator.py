@@ -22,20 +22,81 @@ enrollment_type 判定:
 
 from engine.name_matcher import normalize_name
 import re
+from datetime import date
 
-# Default pricing rules (from 保育料案内)
+
+def get_age_class_from_birth_date(birth_date_str: str | None, fiscal_year: int) -> int | None:
+    """
+    生年月日と年度から年齢クラスを判定する。
+    
+    年齢クラス区分（保育料案内準拠）:
+      0歳児: 当年度 4/2 以降生まれ（= 2024/4/2 以降 if fiscal_year=2025）
+      1歳児: 前年度 4/2 ～ 当年度 4/1
+      2歳児: 前々年度 4/2 ～ 前年度 4/1
+      3歳児: 3年前 4/2 ～ 前々年度 4/1
+      4歳児: 4年前 4/2 ～ 3年前 4/1
+      5歳児: 5年前 4/2 ～ 4年前 4/1
+    
+    例（2025年度）:
+      0歳児: 2024/4/2 以降
+      1歳児: 2023/4/2 ～ 2024/4/1
+      2歳児: 2022/4/2 ～ 2023/4/1
+    
+    Args:
+        birth_date_str: 生年月日 (YYYY-MM-DD format)
+        fiscal_year: 年度 (4月始まり。2026年1月→2025年度)
+    
+    Returns:
+        年齢クラス (0-5) or None if cannot determine
+    """
+    if not birth_date_str:
+        return None
+    
+    try:
+        if isinstance(birth_date_str, date):
+            birth = birth_date_str
+        else:
+            birth = date.fromisoformat(str(birth_date_str)[:10])
+    except (ValueError, TypeError):
+        return None
+    
+    # 年度開始日 = 4/2（4/1生まれは前年度扱い）
+    # 各クラスの生年月日範囲を判定
+    # 0歳児: fiscal_year-1年 4/2 以降生まれ
+    # 1歳児: fiscal_year-2年 4/2 ～ fiscal_year-1年 4/1
+    # ...
+    for age_class in range(6):  # 0~5歳
+        year_start = fiscal_year - 1 - age_class
+        try:
+            range_start = date(year_start, 4, 2)
+        except ValueError:
+            continue
+        
+        if birth >= range_start:
+            return age_class
+    
+    return 5  # 5歳児以上は5歳児クラス
+
+# Default pricing rules (from 保育料案内 PDF)
+# ★ 保育料案内に完全準拠（v5.0）
 DEFAULT_PRICING = {
     "monthly_fees": {
         "0~2歳": {"1": 45000, "2": 50000, "3": 54000},
         "3歳":   {"1": 36000, "2": 41000, "3": 45000},
         "4~5歳": {"1": 35000, "2": 39000, "3": 42000},
     },
+    # ★ 一時保育料: 3歳のみ¥200/30分。0〜2歳と4歳は保育料案内PDFで空欄→¥0
     "spot_rates": {"0~2歳": 200, "3歳": 200, "4~5歳": 150},
-    "early_morning_fee": 300,
-    "extension_fee": 300,
-    "night_fees": {"0~2歳": 3000, "3歳": 2500, "4~5歳": 2500},
+    # ★ 早朝・延長保育料は年齢別（保育料案内PDF準拠）
+    #   0〜2歳: ¥300, 3歳: ¥200, 4歳: ¥150
+    "early_morning_fees": {"0~2歳": 300, "3歳": 200, "4~5歳": 150},
+    "extension_fees":     {"0~2歳": 300, "3歳": 200, "4~5歳": 150},
+    # ★ 夜間保育料: 一時=¥3,000、月極=¥2,500（年齢によらず一律）
+    "night_fee_monthly": 2500,
+    "night_fee_temp": 3000,
     "sick_fee": 2500,
     "meal_prices": {
+        "breakfast": 150,   # ★ 追加: 朝食 ¥150/食
         "lunch": 300,
         "am_snack": 50,
         "pm_snack": 100,
@@ -168,10 +229,10 @@ def _generate_for_child(
     
     # ★ 以下は enrollment_type に関係なく、利用時に課金
     
-    # 3. Early morning (both 月極 and 一時)
+    # 3. Early morning (both 月極 and 一時) — 年齢別料金
     early_count = sum(1 for f in facts if f.get("is_early_morning"))
     if early_count > 0:
-        fee = pricing["early_morning_fee"]
+        fee = pricing["early_morning_fees"].get(age_group, 300)
         lines.append({
             "child_id": child_id,
             "child_name": child_name,
@@ -184,10 +245,10 @@ def _generate_for_child(
             "notes": None,
         })
     
-    # 4. Extension (18:00-20:00, not night)
+    # 4. Extension (20:00-21:00) — 年齢別料金
     ext_count = sum(1 for f in facts if f.get("is_extension") and not f.get("is_night"))
     if ext_count > 0:
-        fee = pricing["extension_fee"]
+        fee = pricing["extension_fees"].get(age_group, 300)
         lines.append({
             "child_id": child_id,
             "child_name": child_name,
@@ -200,10 +261,10 @@ def _generate_for_child(
             "notes": None,
         })
     
-    # 5. Night (20:00+)
+    # 5. Night (21:00+) — 月極/一時で金額が異なる
     night_count = sum(1 for f in facts if f.get("is_night"))
     if night_count > 0:
-        fee = pricing["night_fees"].get(age_group, 2500)
+        fee = pricing["night_fee_temp"] if enrollment == "一時" else pricing["night_fee_monthly"]
         lines.append({
             "child_id": child_id,
             "child_name": child_name,
@@ -233,7 +294,9 @@ def _generate_for_child(
         })
     
     # 7. Meals (both 月極 and 一時)
+    # ★ 朝食（breakfast）追加: ¥150/食（保育料案内準拠）
     meal_types = [
+        ("breakfast", "has_breakfast", "朝食"),
         ("lunch", "has_lunch", "昼食"),
         ("am_snack", "has_am_snack", "朝おやつ"),
         ("pm_snack", "has_pm_snack", "午後おやつ"),
