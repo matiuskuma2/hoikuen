@@ -12,6 +12,7 @@ import type { HonoEnv } from './types/index';
 import jobRoutes from './routes/jobs';
 import childRoutes from './routes/children';
 import templateRoutes from './routes/templates';
+import scheduleRoutes from './routes/schedules';
 
 const app = new Hono<HonoEnv>();
 
@@ -42,7 +43,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '5.2',
+    version: '6.0',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Dashboard + Generator (Direct Mode)',
     timestamp: new Date().toISOString(),
@@ -82,6 +83,7 @@ app.get('/api/config', (c) => {
 app.route('/api/jobs', jobRoutes);
 app.route('/api/children', childRoutes);
 app.route('/api/templates', templateRoutes);
+app.route('/api/schedules', scheduleRoutes);
 
 // Main UI HTML
 function mainPage(): string {
@@ -121,7 +123,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v5.2</p>
+          <p class="text-xs text-gray-500">業務自動化システム v6.0</p>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -145,8 +147,14 @@ function mainPage(): string {
       <button onclick="switchTab('dashboard')" id="tab-dashboard" class="pb-2 text-sm tab-active">
         <i class="fas fa-calendar-alt mr-1"></i>月間ダッシュボード
       </button>
+      <button onclick="switchTab('children')" id="tab-children" class="pb-2 text-sm tab-inactive">
+        <i class="fas fa-child mr-1"></i>園児管理
+      </button>
+      <button onclick="switchTab('schedule-input')" id="tab-schedule-input" class="pb-2 text-sm tab-inactive">
+        <i class="fas fa-edit mr-1"></i>予定入力
+      </button>
       <button onclick="switchTab('upload')" id="tab-upload" class="pb-2 text-sm tab-inactive">
-        <i class="fas fa-upload mr-1"></i>データ入力
+        <i class="fas fa-upload mr-1"></i>ファイル入力
       </button>
       <button onclick="switchTab('generate')" id="tab-generate" class="pb-2 text-sm tab-inactive">
         <i class="fas fa-file-archive mr-1"></i>提出物生成
@@ -344,6 +352,224 @@ function mainPage(): string {
         </div>
       </div>
       </div><!-- /dashboard-month-section -->
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- TAB: CHILDREN (園児管理)                    -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div id="panel-children" class="hidden">
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+        <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 class="text-base font-semibold text-gray-800 flex items-center gap-2">
+            <span class="w-7 h-7 bg-indigo-600 text-white rounded-full flex items-center justify-center text-sm"><i class="fas fa-child"></i></span>
+            園児マスタ管理
+          </h2>
+          <button onclick="openChildForm()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+            <i class="fas fa-plus mr-1"></i>園児を追加
+          </button>
+        </div>
+        <div class="p-4">
+          <p class="text-xs text-gray-500 mb-3">
+            <i class="fas fa-info-circle mr-1 text-blue-400"></i>
+            園児の名前・生年月日・利用区分を登録すると、年齢クラスが自動計算されます。予定入力やダッシュボードで利用されます。
+          </p>
+          <!-- Children Table -->
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-gray-50 text-gray-600">
+                  <th class="px-3 py-2 text-left font-medium">名前</th>
+                  <th class="px-3 py-2 text-left font-medium">フリガナ</th>
+                  <th class="px-3 py-2 text-center font-medium">生年月日</th>
+                  <th class="px-3 py-2 text-center font-medium">クラス</th>
+                  <th class="px-3 py-2 text-center font-medium">利用区分</th>
+                  <th class="px-3 py-2 text-center font-medium">第○子</th>
+                  <th class="px-3 py-2 text-center font-medium">アレルギー</th>
+                  <th class="px-3 py-2 text-center font-medium">ルクミーID</th>
+                  <th class="px-3 py-2 text-center font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody id="children-table-body">
+                <tr><td colspan="9" class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="children-count" class="mt-3 text-xs text-gray-400 text-right"></div>
+        </div>
+      </div>
+
+      <!-- ═══ CHILD ADD/EDIT MODAL ═══ -->
+      <div id="child-modal" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center">
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 overflow-hidden">
+          <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 id="child-modal-title" class="text-base font-semibold text-gray-800">園児を追加</h3>
+            <button onclick="closeChildForm()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+          </div>
+          <form id="child-form" onsubmit="saveChild(event)" class="px-5 py-4 space-y-3">
+            <input type="hidden" id="child-edit-id" value="">
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">名前 <span class="text-red-400">*</span></label>
+                <input type="text" id="child-name" required class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" placeholder="例：山田 太郎">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">フリガナ</label>
+                <input type="text" id="child-name-kana" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" placeholder="例：ヤマダ タロウ">
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">生年月日</label>
+                <input type="date" id="child-birth-date" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">利用区分 <span class="text-red-400">*</span></label>
+                <select id="child-enrollment" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                  <option value="月極">月極</option>
+                  <option value="一時">一時</option>
+                </select>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">第○子</label>
+                <input type="number" id="child-order" min="1" max="10" value="1" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">ルクミーID</label>
+                <input type="text" id="child-lukumi-id" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" placeholder="自動突合用">
+              </div>
+              <div class="flex items-end pb-1">
+                <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="checkbox" id="child-allergy" class="w-4 h-4 text-indigo-600 rounded">
+                  アレルギー食
+                </label>
+              </div>
+            </div>
+            <div class="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              <button type="button" onclick="closeChildForm()" class="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200">キャンセル</button>
+              <button type="submit" class="px-4 py-2 text-sm text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 font-medium">
+                <i class="fas fa-save mr-1"></i><span id="child-save-label">保存</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- TAB: SCHEDULE INPUT (予定入力)              -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div id="panel-schedule-input" class="hidden">
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+        <div class="px-5 py-4 border-b border-gray-100">
+          <h2 class="text-base font-semibold text-gray-800 flex items-center gap-2">
+            <span class="w-7 h-7 bg-teal-600 text-white rounded-full flex items-center justify-center text-sm"><i class="fas fa-edit"></i></span>
+            予定入力（画面入力モード）
+          </h2>
+          <p class="text-xs text-gray-500 mt-1">
+            <i class="fas fa-info-circle mr-1 text-blue-400"></i>
+            Excelの利用予定表ファイルがない場合、ここで直接入力できます。園児を選択して月のカレンダーで予定を入力してください。
+          </p>
+        </div>
+        <div class="p-4">
+          <!-- Month selector + Child selector -->
+          <div class="flex flex-wrap items-end gap-3 mb-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">年</label>
+              <input type="number" id="sched-year" min="2024" max="2030" class="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-teal-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">月</label>
+              <select id="sched-month" class="w-20 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-teal-500">
+                <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
+                <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
+                <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
+                <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
+              </select>
+            </div>
+            <div class="flex-1 min-w-[200px]">
+              <label class="block text-xs font-medium text-gray-600 mb-1">園児を選択</label>
+              <select id="sched-child" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-teal-500">
+                <option value="">-- 園児を選択 --</option>
+              </select>
+            </div>
+            <button onclick="loadScheduleGrid()" class="bg-teal-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-teal-700 transition-colors">
+              <i class="fas fa-calendar-alt mr-1"></i>表示
+            </button>
+          </div>
+
+          <!-- Schedule Grid -->
+          <div id="schedule-grid-container" class="hidden">
+            <div class="flex items-center justify-between mb-3">
+              <h3 id="schedule-grid-title" class="text-sm font-bold text-gray-700"></h3>
+              <div class="flex gap-2">
+                <button onclick="applyDefaultTimes()" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition-colors" title="月極のデフォルト時間を全日に一括入力">
+                  <i class="fas fa-magic mr-1"></i>デフォルト一括入力
+                </button>
+                <button onclick="saveSchedule()" class="bg-teal-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-teal-700 transition-colors">
+                  <i class="fas fa-save mr-1"></i>保存
+                </button>
+              </div>
+            </div>
+
+            <!-- Default times row -->
+            <div id="schedule-defaults" class="bg-teal-50 rounded-lg px-4 py-3 mb-3 border border-teal-200">
+              <div class="text-xs font-medium text-teal-700 mb-2"><i class="fas fa-clock mr-1"></i>デフォルト時間（一括入力用）</div>
+              <div class="flex flex-wrap gap-3 items-center">
+                <div class="flex items-center gap-1">
+                  <label class="text-xs text-gray-600">登園:</label>
+                  <input type="time" id="sched-default-start" value="08:30" class="border border-gray-300 rounded px-2 py-1 text-xs">
+                </div>
+                <div class="flex items-center gap-1">
+                  <label class="text-xs text-gray-600">降園:</label>
+                  <input type="time" id="sched-default-end" value="17:30" class="border border-gray-300 rounded px-2 py-1 text-xs">
+                </div>
+                <label class="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                  <input type="checkbox" id="sched-default-lunch" checked class="w-3.5 h-3.5 text-teal-600 rounded"> 昼食
+                </label>
+                <label class="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                  <input type="checkbox" id="sched-default-pm-snack" checked class="w-3.5 h-3.5 text-teal-600 rounded"> 午後おやつ
+                </label>
+                <label class="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                  <input type="checkbox" id="sched-default-am-snack" class="w-3.5 h-3.5 text-teal-600 rounded"> 朝おやつ
+                </label>
+                <label class="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                  <input type="checkbox" id="sched-default-dinner" class="w-3.5 h-3.5 text-teal-600 rounded"> 夕食
+                </label>
+              </div>
+            </div>
+
+            <!-- Calendar grid -->
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs border-collapse" id="schedule-table">
+                <thead>
+                  <tr class="bg-gray-50">
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 w-12 border">日</th>
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 w-10 border">曜日</th>
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 border">登園</th>
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 border">降園</th>
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 w-10 border">昼食</th>
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 w-10 border">朝お</th>
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 w-10 border">午お</th>
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 w-10 border">夕食</th>
+                    <th class="px-2 py-2 text-center font-medium text-gray-600 w-10 border">休</th>
+                  </tr>
+                </thead>
+                <tbody id="schedule-table-body">
+                </tbody>
+              </table>
+            </div>
+            <div id="schedule-save-status" class="mt-3 text-xs text-gray-400"></div>
+          </div>
+
+          <!-- Empty state -->
+          <div id="schedule-empty" class="text-center py-10 text-gray-400">
+            <i class="fas fa-calendar-plus text-3xl mb-3 text-gray-300"></i>
+            <p class="text-sm">年月と園児を選択して「表示」をクリックしてください</p>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════════════════════════════════════════ -->

@@ -1,8 +1,14 @@
 /**
- * あゆっこ業務自動化 — Frontend Application v5.2
+ * あゆっこ業務自動化 — Frontend Application v6.0
  * 
  * Architecture: UI → Python Generator (Direct Mode) / Hono proxy (Fallback)
  * 
+ * v6.0: 園児管理タブ + 予定入力タブ追加
+ *   - 園児CRUD（追加/編集/削除）をUI上で完結
+ *   - 予定入力: カレンダー形式で登降園時間・食事フラグを直接入力
+ *   - デフォルト時間一括入力機能
+ *   - DB(schedule_plans)への直接保存
+ *
  * v5.2: QAチェックリスト対応 (input safety, error handling, security improvements)
  *
  * v5.1 (retained): Direct Generator通信 + テンプレート破損耐性 + 年齢別人数表示
@@ -50,6 +56,8 @@ const VIEWS = Object.freeze({
 
 const TABS = Object.freeze({
   DASHBOARD: 'dashboard',
+  CHILDREN: 'children',
+  SCHEDULE_INPUT: 'schedule-input',
   UPLOAD: 'upload',
   GENERATE: 'generate',
 });
@@ -136,7 +144,7 @@ const state = {
 
 function switchTab(tab) {
   state.activeTab = tab;
-  const tabs = ['dashboard', 'upload', 'generate'];
+  const tabs = ['dashboard', 'children', 'schedule-input', 'upload', 'generate'];
   tabs.forEach(t => {
     const panel = document.getElementById(`panel-${t}`);
     const tabBtn = document.getElementById(`tab-${t}`);
@@ -156,6 +164,16 @@ function switchTab(tab) {
     if (!hasResult && !hasProgress) {
       document.getElementById('generate-empty').classList.remove('hidden');
     }
+  }
+
+  // Load children when switching to children tab
+  if (tab === 'children') {
+    loadChildren();
+  }
+
+  // Initialize schedule input when switching to that tab
+  if (tab === 'schedule-input') {
+    initScheduleInput();
   }
 }
 
@@ -1945,6 +1963,397 @@ function resetAll() {
   document.getElementById('generate-empty').classList.remove('hidden');
 
   switchTab(TABS.DASHBOARD);
+}
+
+// ═══════════════════════════════════════════
+// CHILDREN MANAGEMENT (園児管理)
+// ═══════════════════════════════════════════
+
+let childrenCache = [];
+
+async function loadChildren() {
+  const tbody = document.getElementById('children-table-body');
+  if (!tbody) return;
+  
+  tbody.innerHTML = '<tr><td colspan="9" class="text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>';
+  
+  try {
+    const res = await fetch('/api/children');
+    const data = await res.json();
+    childrenCache = data.children || [];
+    renderChildrenTable(childrenCache);
+    document.getElementById('children-count').textContent = `合計 ${childrenCache.length} 名`;
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center py-8 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>読み込みエラー</td></tr>';
+    console.error('[Children] Load error:', e);
+  }
+}
+
+function renderChildrenTable(children) {
+  const tbody = document.getElementById('children-table-body');
+  if (!children.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center py-8 text-gray-400"><i class="fas fa-child mr-1"></i>園児が登録されていません。「園児を追加」ボタンから登録してください。</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = children.map(ch => {
+    const ageLabel = ch.enrollment_type === '一時' ? '<span class="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs">一時</span>'
+      : ch.age_class !== null ? `<span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs">${ch.age_class}歳児</span>`
+      : '<span class="text-gray-400 text-xs">-</span>';
+    const enrollBadge = ch.enrollment_type === '月極'
+      ? '<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-xs">月極</span>'
+      : '<span class="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs">一時</span>';
+    const allergyBadge = ch.is_allergy
+      ? '<span class="bg-red-100 text-red-600 px-2 py-0.5 rounded text-xs"><i class="fas fa-exclamation-triangle mr-0.5"></i>あり</span>'
+      : '<span class="text-gray-300 text-xs">-</span>';
+    const birthStr = ch.birth_date || '-';
+    
+    return `<tr class="border-t border-gray-100 hover:bg-gray-50">
+      <td class="px-3 py-2 font-medium text-gray-800">${escHtml(ch.name)}</td>
+      <td class="px-3 py-2 text-gray-500">${escHtml(ch.name_kana || '-')}</td>
+      <td class="px-3 py-2 text-center text-gray-600">${birthStr}</td>
+      <td class="px-3 py-2 text-center">${ageLabel}</td>
+      <td class="px-3 py-2 text-center">${enrollBadge}</td>
+      <td class="px-3 py-2 text-center text-gray-600">${ch.child_order || 1}</td>
+      <td class="px-3 py-2 text-center">${allergyBadge}</td>
+      <td class="px-3 py-2 text-center text-gray-400 text-xs">${escHtml(ch.lukumi_id || '-')}</td>
+      <td class="px-3 py-2 text-center">
+        <button onclick="editChild('${ch.id}')" class="text-blue-500 hover:text-blue-700 mr-2" title="編集"><i class="fas fa-edit"></i></button>
+        <button onclick="deleteChild('${ch.id}', '${escHtml(ch.name)}')" class="text-red-400 hover:text-red-600" title="削除"><i class="fas fa-trash"></i></button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function openChildForm(child) {
+  const modal = document.getElementById('child-modal');
+  const title = document.getElementById('child-modal-title');
+  const saveLabel = document.getElementById('child-save-label');
+  
+  if (child) {
+    title.textContent = '園児を編集';
+    saveLabel.textContent = '更新';
+    document.getElementById('child-edit-id').value = child.id;
+    document.getElementById('child-name').value = child.name || '';
+    document.getElementById('child-name-kana').value = child.name_kana || '';
+    document.getElementById('child-birth-date').value = child.birth_date || '';
+    document.getElementById('child-enrollment').value = child.enrollment_type || '月極';
+    document.getElementById('child-order').value = child.child_order || 1;
+    document.getElementById('child-lukumi-id').value = child.lukumi_id || '';
+    document.getElementById('child-allergy').checked = !!child.is_allergy;
+  } else {
+    title.textContent = '園児を追加';
+    saveLabel.textContent = '保存';
+    document.getElementById('child-edit-id').value = '';
+    document.getElementById('child-form').reset();
+    document.getElementById('child-order').value = '1';
+  }
+  
+  modal.classList.remove('hidden');
+}
+
+function closeChildForm() {
+  document.getElementById('child-modal').classList.add('hidden');
+}
+
+function editChild(id) {
+  const child = childrenCache.find(c => c.id === id);
+  if (child) openChildForm(child);
+}
+
+async function deleteChild(id, name) {
+  if (!confirm(`「${name}」を削除しますか？\n関連する予定・実績データも削除されます。`)) return;
+  
+  try {
+    const res = await fetch(`/api/children/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json();
+      alert('削除エラー: ' + (err.error || '不明なエラー'));
+      return;
+    }
+    loadChildren();
+  } catch (e) {
+    alert('削除に失敗しました: ' + e.message);
+  }
+}
+
+async function saveChild(event) {
+  event.preventDefault();
+  
+  const editId = document.getElementById('child-edit-id').value;
+  const payload = {
+    name: document.getElementById('child-name').value.trim(),
+    name_kana: document.getElementById('child-name-kana').value.trim() || null,
+    birth_date: document.getElementById('child-birth-date').value || null,
+    enrollment_type: document.getElementById('child-enrollment').value,
+    child_order: parseInt(document.getElementById('child-order').value) || 1,
+    lukumi_id: document.getElementById('child-lukumi-id').value.trim() || null,
+    is_allergy: document.getElementById('child-allergy').checked ? 1 : 0,
+  };
+
+  if (!payload.name) {
+    alert('名前は必須です');
+    return;
+  }
+
+  try {
+    let res;
+    if (editId) {
+      res = await fetch(`/api/children/${editId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } else {
+      res = await fetch('/api/children', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert('保存エラー: ' + (err.error || '不明なエラー'));
+      return;
+    }
+
+    closeChildForm();
+    loadChildren();
+  } catch (e) {
+    alert('保存に失敗しました: ' + e.message);
+  }
+}
+
+// ═══════════════════════════════════════════
+// SCHEDULE INPUT (予定入力)
+// ═══════════════════════════════════════════
+
+let scheduleInputInitialized = false;
+
+function initScheduleInput() {
+  if (scheduleInputInitialized) return;
+  scheduleInputInitialized = true;
+
+  const now = new Date();
+  const yearEl = document.getElementById('sched-year');
+  const monthEl = document.getElementById('sched-month');
+  if (yearEl) yearEl.value = now.getFullYear();
+  if (monthEl) monthEl.value = now.getMonth() + 1;
+
+  // Populate child selector
+  loadChildrenForSchedule();
+}
+
+async function loadChildrenForSchedule() {
+  const sel = document.getElementById('sched-child');
+  if (!sel) return;
+  
+  try {
+    const res = await fetch('/api/children');
+    const data = await res.json();
+    const children = data.children || [];
+    
+    sel.innerHTML = '<option value="">-- 園児を選択 --</option>';
+    
+    let currentGroup = '';
+    children.forEach(ch => {
+      const groupLabel = ch.enrollment_type === '一時' ? '一時利用' : (ch.age_class !== null ? `${ch.age_class}歳児` : '未分類');
+      if (groupLabel !== currentGroup) {
+        if (currentGroup) sel.innerHTML += '</optgroup>';
+        sel.innerHTML += `<optgroup label="${groupLabel}">`;
+        currentGroup = groupLabel;
+      }
+      sel.innerHTML += `<option value="${ch.id}">${ch.name}（${groupLabel}）</option>`;
+    });
+    if (currentGroup) sel.innerHTML += '</optgroup>';
+  } catch (e) {
+    console.error('[Schedule] Failed to load children:', e);
+  }
+}
+
+const WEEKDAY_NAMES = ['日', '月', '火', '水', '木', '金', '土'];
+
+async function loadScheduleGrid() {
+  const year = parseInt(document.getElementById('sched-year').value);
+  const month = parseInt(document.getElementById('sched-month').value);
+  const childId = document.getElementById('sched-child').value;
+
+  if (!childId) {
+    alert('園児を選択してください');
+    return;
+  }
+
+  const child = childrenCache.length > 0
+    ? childrenCache.find(c => c.id === childId)
+    : null;
+
+  // Show grid, hide empty
+  document.getElementById('schedule-grid-container').classList.remove('hidden');
+  document.getElementById('schedule-empty').classList.add('hidden');
+
+  const titleEl = document.getElementById('schedule-grid-title');
+  const childName = child ? child.name : '(不明)';
+  titleEl.textContent = `${year}年${month}月 — ${childName}`;
+
+  // Fetch existing schedule
+  let existing = {};
+  try {
+    const res = await fetch(`/api/schedules/${childId}?year=${year}&month=${month}`);
+    const data = await res.json();
+    (data.plans || []).forEach(p => {
+      existing[p.day] = p;
+    });
+  } catch (e) {
+    console.warn('[Schedule] Failed to load existing plans:', e);
+  }
+
+  // Build table
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const tbody = document.getElementById('schedule-table-body');
+  let html = '';
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month - 1, day);
+    const dow = date.getDay();
+    const wdName = WEEKDAY_NAMES[dow];
+    const isWeekend = dow === 0 || dow === 6;
+    const bgClass = isWeekend ? 'bg-red-50' : (day % 2 === 0 ? 'bg-white' : 'bg-gray-50/50');
+    const wdClass = isWeekend ? 'text-red-400 font-medium' : 'text-gray-500';
+    
+    const ex = existing[day] || {};
+    const startVal = ex.planned_start || '';
+    const endVal = ex.planned_end || '';
+    const lunchChecked = ex.lunch_flag ? 'checked' : '';
+    const amSnackChecked = ex.am_snack_flag ? 'checked' : '';
+    const pmSnackChecked = ex.pm_snack_flag ? 'checked' : '';
+    const dinnerChecked = ex.dinner_flag ? 'checked' : '';
+    const isOff = !startVal && !endVal;
+
+    html += `<tr class="${bgClass}" data-day="${day}">
+      <td class="px-2 py-1.5 text-center font-medium text-gray-700 border">${day}</td>
+      <td class="px-2 py-1.5 text-center ${wdClass} border">${wdName}</td>
+      <td class="px-1 py-1 border"><input type="time" class="sched-start w-full text-xs border-0 bg-transparent px-1 py-0.5 focus:ring-1 focus:ring-teal-400 rounded" value="${startVal}" data-day="${day}"></td>
+      <td class="px-1 py-1 border"><input type="time" class="sched-end w-full text-xs border-0 bg-transparent px-1 py-0.5 focus:ring-1 focus:ring-teal-400 rounded" value="${endVal}" data-day="${day}"></td>
+      <td class="px-1 py-1 text-center border"><input type="checkbox" class="sched-lunch w-3.5 h-3.5 text-teal-600 rounded" data-day="${day}" ${lunchChecked}></td>
+      <td class="px-1 py-1 text-center border"><input type="checkbox" class="sched-am-snack w-3.5 h-3.5 text-teal-600 rounded" data-day="${day}" ${amSnackChecked}></td>
+      <td class="px-1 py-1 text-center border"><input type="checkbox" class="sched-pm-snack w-3.5 h-3.5 text-teal-600 rounded" data-day="${day}" ${pmSnackChecked}></td>
+      <td class="px-1 py-1 text-center border"><input type="checkbox" class="sched-dinner w-3.5 h-3.5 text-teal-600 rounded" data-day="${day}" ${dinnerChecked}></td>
+      <td class="px-1 py-1 text-center border"><input type="checkbox" class="sched-off w-3.5 h-3.5 text-gray-400 rounded" data-day="${day}" ${isOff && !startVal ? '' : ''} onchange="toggleDayOff(this, ${day})"></td>
+    </tr>`;
+  }
+
+  tbody.innerHTML = html;
+  document.getElementById('schedule-save-status').textContent = '';
+}
+
+function toggleDayOff(checkbox, day) {
+  const row = checkbox.closest('tr');
+  if (checkbox.checked) {
+    row.querySelector('.sched-start').value = '';
+    row.querySelector('.sched-end').value = '';
+    row.querySelectorAll('input[type="checkbox"]:not(.sched-off)').forEach(cb => cb.checked = false);
+  }
+}
+
+function applyDefaultTimes() {
+  const defStart = document.getElementById('sched-default-start').value;
+  const defEnd = document.getElementById('sched-default-end').value;
+  const defLunch = document.getElementById('sched-default-lunch').checked;
+  const defAmSnack = document.getElementById('sched-default-am-snack').checked;
+  const defPmSnack = document.getElementById('sched-default-pm-snack').checked;
+  const defDinner = document.getElementById('sched-default-dinner').checked;
+
+  const year = parseInt(document.getElementById('sched-year').value);
+  const month = parseInt(document.getElementById('sched-month').value);
+  const daysInMonth = new Date(year, month, 0).getDate();
+
+  let filled = 0;
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month - 1, day);
+    const dow = date.getDay();
+    // Skip weekends
+    if (dow === 0 || dow === 6) continue;
+
+    const row = document.querySelector(`tr[data-day="${day}"]`);
+    if (!row) continue;
+    
+    const offCb = row.querySelector('.sched-off');
+    if (offCb && offCb.checked) continue;
+
+    row.querySelector('.sched-start').value = defStart;
+    row.querySelector('.sched-end').value = defEnd;
+    row.querySelector('.sched-lunch').checked = defLunch;
+    row.querySelector('.sched-am-snack').checked = defAmSnack;
+    row.querySelector('.sched-pm-snack').checked = defPmSnack;
+    row.querySelector('.sched-dinner').checked = defDinner;
+    filled++;
+  }
+  
+  document.getElementById('schedule-save-status').innerHTML = 
+    `<span class="text-teal-600"><i class="fas fa-check mr-1"></i>平日 ${filled} 日にデフォルト時間を入力しました（未保存）</span>`;
+}
+
+async function saveSchedule() {
+  const year = parseInt(document.getElementById('sched-year').value);
+  const month = parseInt(document.getElementById('sched-month').value);
+  const childId = document.getElementById('sched-child').value;
+  const daysInMonth = new Date(year, month, 0).getDate();
+
+  if (!childId) {
+    alert('園児を選択してください');
+    return;
+  }
+
+  const statusEl = document.getElementById('schedule-save-status');
+  statusEl.innerHTML = '<span class="text-gray-500"><i class="fas fa-spinner fa-spin mr-1"></i>保存中...</span>';
+
+  const days = [];
+  for (let day = 1; day <= daysInMonth; day++) {
+    const row = document.querySelector(`tr[data-day="${day}"]`);
+    if (!row) continue;
+
+    const startVal = row.querySelector('.sched-start').value || null;
+    const endVal = row.querySelector('.sched-end').value || null;
+    const lunchFlag = row.querySelector('.sched-lunch').checked ? 1 : 0;
+    const amSnackFlag = row.querySelector('.sched-am-snack').checked ? 1 : 0;
+    const pmSnackFlag = row.querySelector('.sched-pm-snack').checked ? 1 : 0;
+    const dinnerFlag = row.querySelector('.sched-dinner').checked ? 1 : 0;
+
+    days.push({
+      day,
+      planned_start: startVal,
+      planned_end: endVal,
+      lunch_flag: lunchFlag,
+      am_snack_flag: amSnackFlag,
+      pm_snack_flag: pmSnackFlag,
+      dinner_flag: dinnerFlag,
+    });
+  }
+
+  try {
+    const res = await fetch('/api/schedules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ child_id: childId, year, month, days }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      statusEl.innerHTML = `<span class="text-red-500"><i class="fas fa-times mr-1"></i>保存エラー: ${err.error || '不明なエラー'}</span>`;
+      return;
+    }
+
+    const result = await res.json();
+    statusEl.innerHTML = `<span class="text-teal-600"><i class="fas fa-check mr-1"></i>${result.message}（登録: ${result.upserted}日, 削除: ${result.deleted}日）</span>`;
+  } catch (e) {
+    statusEl.innerHTML = `<span class="text-red-500"><i class="fas fa-times mr-1"></i>保存に失敗しました: ${e.message}</span>`;
+  }
 }
 
 // ═══════════════════════════════════════════
