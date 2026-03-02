@@ -2,7 +2,7 @@
  * 滋賀医科大学学内保育所 あゆっこ — 業務自動化システム
  * Main Hono Application Entry Point
  * 
- * v4.3 (2026-02-16) — テンプレ登録UX: 初回登録セクション分離、登録済み状態管理、木村さん向け説明文
+ * v6.1 (2026-03-02) — ダッシュボードDB直結: ファイルアップロード不要でDB予定から即表示
  * Architecture: Hono (UI + proxy) → Python Generator (port 8787)
  */
 
@@ -166,35 +166,81 @@ function mainPage(): string {
     <!-- ═══════════════════════════════════════════ -->
     <div id="panel-dashboard">
 
+      <!-- ═══ MONTH SELECTOR (always visible) ═══ -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+        <div class="px-5 py-4 flex flex-wrap items-end gap-3">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">年</label>
+            <input type="number" id="dash-year" min="2024" max="2030" class="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">月</label>
+            <select id="dash-month" class="w-20 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">
+              <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
+              <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
+              <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
+              <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
+            </select>
+          </div>
+          <button onclick="loadDashboardFromDB()" id="btn-dash-db" class="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
+            <i class="fas fa-calendar-alt mr-1"></i>予定を表示
+          </button>
+          <span class="text-xs text-gray-400 ml-1">
+            <i class="fas fa-database mr-1"></i>登録済みの予定をDBから表示します
+          </span>
+        </div>
+      </div>
+
       <!-- ═══ EMPTY STATE (before data loaded) ═══ -->
       <div id="dashboard-empty">
-        <!-- Guide card: always visible even before upload -->
+        <!-- Guide card -->
         <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
           <div class="px-5 py-4">
             <h3 class="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
               <span class="w-6 h-6 bg-blue-600 rounded-lg flex items-center justify-center">
                 <i class="fas fa-info text-white text-xs"></i>
               </span>
-              このシステムでできること
+              使い方ガイド
             </h3>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-              <div class="bg-blue-50 rounded-lg px-4 py-3 border border-blue-100">
-                <div class="text-xs font-bold text-blue-800 mb-1"><i class="fas fa-calendar-alt mr-1"></i>月間ダッシュボード（この画面）</div>
-                <div class="text-xs text-blue-600 leading-relaxed">
-                  「誰が何日の何時に来るか」をカレンダー表示。<br>
-                  食数・早朝/延長/夜間を一目で確認 → 職員シフト計画に。
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+              <div class="bg-indigo-50 rounded-lg px-4 py-3 border border-indigo-100">
+                <div class="text-xs font-bold text-indigo-800 mb-1"><i class="fas fa-child mr-1"></i>① 園児を登録</div>
+                <div class="text-xs text-indigo-600 leading-relaxed">
+                  「園児管理」タブで園児の名前・生年月日・利用区分を登録。
                 </div>
               </div>
+              <div class="bg-teal-50 rounded-lg px-4 py-3 border border-teal-100">
+                <div class="text-xs font-bold text-teal-800 mb-1"><i class="fas fa-edit mr-1"></i>② 予定を入力</div>
+                <div class="text-xs text-teal-600 leading-relaxed">
+                  「予定入力」タブで各園児の登降園時間・食事フラグを入力。<br>
+                  <span class="text-teal-500">（紙の予定表→画面で直接入力）</span>
+                </div>
+              </div>
+              <div class="bg-blue-50 rounded-lg px-4 py-3 border border-blue-100">
+                <div class="text-xs font-bold text-blue-800 mb-1"><i class="fas fa-calendar-alt mr-1"></i>③ ダッシュボードで確認</div>
+                <div class="text-xs text-blue-600 leading-relaxed">
+                  上の「予定を表示」で月間カレンダー表示。<br>
+                  食数・早朝/延長/夜間を一覧確認。
+                </div>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div class="bg-green-50 rounded-lg px-4 py-3 border border-green-100">
-                <div class="text-xs font-bold text-green-800 mb-1"><i class="fas fa-file-archive mr-1"></i>提出物の一括生成</div>
+                <div class="text-xs font-bold text-green-800 mb-1"><i class="fas fa-file-archive mr-1"></i>④ 提出物を一括生成</div>
                 <div class="text-xs text-green-600 leading-relaxed">
-                  月末にZIP出力 → 3フォルダで提出完了。<br>
-                  日報Excel / 保育料明細 / 保護者PDF を自動作成。
+                  月末に「提出物生成」タブで日報Excel / 保育料明細 / 保護者PDFをZIP出力。
+                </div>
+              </div>
+              <div class="bg-amber-50 rounded-lg px-4 py-3 border border-amber-100">
+                <div class="text-xs font-bold text-amber-800 mb-1"><i class="fas fa-upload mr-1"></i>ルクミー実績の反映</div>
+                <div class="text-xs text-amber-600 leading-relaxed">
+                  ルクミーの登降園実績がある場合は「ファイル入力」タブからアップロード。<br>
+                  <span class="text-amber-500">予定 vs 実績の差分を確認できます。</span>
                 </div>
               </div>
             </div>
             <!-- ZIP output explanation -->
-            <details>
+            <details class="mt-3">
               <summary class="text-xs font-semibold text-gray-600 cursor-pointer flex items-center gap-1">
                 <i class="fas fa-folder-open text-gray-400"></i>
                 出力される提出物（ZIP）の詳細
@@ -222,22 +268,26 @@ function mainPage(): string {
           </div>
         </div>
 
-        <!-- How to start -->
+        <!-- Empty state message -->
         <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-10 text-center">
           <div class="w-14 h-14 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
             <i class="fas fa-calendar-alt text-blue-400 text-2xl"></i>
           </div>
           <h3 class="text-base font-semibold text-gray-700 mb-2">月間ダッシュボード</h3>
-          <p class="text-sm text-gray-500 mb-1 max-w-md mx-auto">
-            ルクミー登降園データと利用予定表をアップロードすると、<br>
-            月間の来園予定・食数・早朝/延長/夜間がカレンダーで表示されます。
+          <p class="text-sm text-gray-500 mb-4 max-w-md mx-auto">
+            上の「予定を表示」ボタンで、登録済みの予定をカレンダー表示します。
           </p>
-          <p class="text-xs text-gray-400 mb-5 max-w-md mx-auto">
-            ① ルクミー ② 予定表 を入れて「月間表示」。提出が必要なときだけ「提出物を作成」。
-          </p>
-          <button onclick="switchTab('upload')" class="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
-            <i class="fas fa-upload mr-1"></i>データをアップロード
-          </button>
+          <div class="flex flex-col sm:flex-row gap-3 justify-center">
+            <button onclick="loadDashboardFromDB()" class="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
+              <i class="fas fa-calendar-alt mr-1"></i>予定を表示
+            </button>
+            <button onclick="switchTab('children')" class="bg-indigo-100 text-indigo-700 px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-200 transition-colors">
+              <i class="fas fa-child mr-1"></i>園児を登録する
+            </button>
+            <button onclick="switchTab('schedule-input')" class="bg-teal-100 text-teal-700 px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-teal-200 transition-colors">
+              <i class="fas fa-edit mr-1"></i>予定を入力する
+            </button>
+          </div>
         </div>
       </div>
 

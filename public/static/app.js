@@ -863,6 +863,81 @@ async function loadDashboard() {
 }
 
 // ═══════════════════════════════════════════
+// DASHBOARD: LOAD FROM DB (予定入力データ)
+// ═══════════════════════════════════════════
+
+async function loadDashboardFromDB() {
+  const yearEl = document.getElementById('dash-year');
+  const monthEl = document.getElementById('dash-month');
+  const year = parseInt(yearEl ? yearEl.value : new Date().getFullYear());
+  const month = parseInt(monthEl ? monthEl.value : new Date().getMonth() + 1);
+
+  const btn = document.getElementById('btn-dash-db');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>読込中...';
+  }
+
+  try {
+    const response = await fetch('/api/schedules/dashboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year, month }),
+    });
+
+    if (!response.ok) {
+      let err;
+      try { err = await response.json(); } catch { err = { error: `HTTP ${response.status}` }; }
+      throw new Error(err.error || `HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Check if there's any data
+    const totalPlans = (data.daily_summary || []).reduce((sum, d) => sum + (d.total_children || 0), 0);
+    if (totalPlans === 0) {
+      // Show a friendly message instead of empty dashboard
+      document.getElementById('dashboard-empty').classList.remove('hidden');
+      document.getElementById('dashboard-content').classList.add('hidden');
+
+      const emptyMsg = document.querySelector('#dashboard-empty .bg-white.p-10');
+      if (emptyMsg) {
+        emptyMsg.innerHTML = `
+          <div class="w-14 h-14 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-inbox text-amber-400 text-2xl"></i>
+          </div>
+          <h3 class="text-base font-semibold text-gray-700 mb-2">${year}年${month}月の予定データがありません</h3>
+          <p class="text-sm text-gray-500 mb-4 max-w-md mx-auto">
+            まず園児を登録し、予定入力タブで利用予定を入力してください。
+          </p>
+          <div class="flex flex-col sm:flex-row gap-3 justify-center">
+            <button onclick="switchTab('children')" class="bg-indigo-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+              <i class="fas fa-child mr-1"></i>園児を登録
+            </button>
+            <button onclick="switchTab('schedule-input')" class="bg-teal-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-teal-700 transition-colors">
+              <i class="fas fa-edit mr-1"></i>予定を入力
+            </button>
+          </div>
+        `;
+      }
+      return;
+    }
+
+    state.dashboardData = data;
+    state.selectedDay = null;
+    renderDashboard(data);
+
+  } catch (error) {
+    alert(`ダッシュボードの読み込みに失敗しました: ${error.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-calendar-alt mr-1"></i>予定を表示';
+    }
+  }
+}
+
+// ═══════════════════════════════════════════
 // DASHBOARD: RENDER
 // ═══════════════════════════════════════════
 
@@ -2350,7 +2425,10 @@ async function saveSchedule() {
     }
 
     const result = await res.json();
-    statusEl.innerHTML = `<span class="text-teal-600"><i class="fas fa-check mr-1"></i>${result.message}（登録: ${result.upserted}日, 削除: ${result.deleted}日）</span>`;
+    statusEl.innerHTML = `<span class="text-teal-600"><i class="fas fa-check mr-1"></i>${result.message}（登録: ${result.upserted}日, 削除: ${result.deleted}日）</span>
+      <button onclick="goToDashboardAfterSave()" class="ml-3 bg-blue-500 text-white px-3 py-1 rounded text-xs hover:bg-blue-600 transition-colors">
+        <i class="fas fa-calendar-alt mr-1"></i>ダッシュボードで確認
+      </button>`;
   } catch (e) {
     statusEl.innerHTML = `<span class="text-red-500"><i class="fas fa-times mr-1"></i>保存に失敗しました: ${e.message}</span>`;
   }
@@ -2359,6 +2437,18 @@ async function saveSchedule() {
 // ═══════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════
+
+function goToDashboardAfterSave() {
+  // Sync schedule input year/month to dashboard selectors
+  const year = document.getElementById('sched-year').value;
+  const month = document.getElementById('sched-month').value;
+  const dashYear = document.getElementById('dash-year');
+  const dashMonth = document.getElementById('dash-month');
+  if (dashYear) dashYear.value = year;
+  if (dashMonth) dashMonth.value = month;
+  switchTab(TABS.DASHBOARD);
+  loadDashboardFromDB();
+}
 
 function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
@@ -2409,13 +2499,24 @@ document.addEventListener('DOMContentLoaded', () => {
       `<i class="fas fa-circle text-red-400 mr-1"></i>オフライン`;
   });
 
-  // Set current month as default
+  // Set current month as default (upload tab selectors)
   const now = new Date();
   const yearSel = document.getElementById('year-select');
   const monthSel = document.getElementById('month-select');
   if (yearSel) yearSel.value = String(now.getFullYear());
   if (monthSel) monthSel.value = String(now.getMonth() + 1);
 
+  // Set current month for dashboard selectors
+  const dashYear = document.getElementById('dash-year');
+  const dashMonth = document.getElementById('dash-month');
+  if (dashYear) dashYear.value = String(now.getFullYear());
+  if (dashMonth) dashMonth.value = String(now.getMonth() + 1);
+
   // Start on dashboard tab
   switchTab(TABS.DASHBOARD);
+
+  // Auto-load dashboard from DB on first visit
+  setTimeout(() => {
+    loadDashboardFromDB();
+  }, 300);
 });
