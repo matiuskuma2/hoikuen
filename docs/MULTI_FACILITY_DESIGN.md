@@ -1,32 +1,36 @@
-# マルチ施設展開 設計書 — 保育園業務自動化プラットフォーム
+# 複数施設対応 & 保護者スマホ入力 — 総合設計書
 
 > **Version**: 1.0 (2026-03-04)
 > **Status**: Design Only (実装前)
-> **Author**: Ayukko Automation Team
+> **Author**: Ayukko Development Team
+> **Parent System**: あゆっこ 業務自動化システム v6.1
 > **Reviewed by**: モギモギ（関屋紘之）
-> **Origin**: 木村さんヒアリング 2026-03-04 — 5つの要件整理
-> **Parent System**: 滋賀医科大学学内保育所 あゆっこ 業務自動化システム v6.1
+> **関連文書**: REQUIREMENTS.md (v3.1), LINE_SCHEDULE_COLLECTION_PLAN.md (v2.0→v3.0), REQUIREMENTS_CHECK.md (v1.0)
 
 ---
 
 ## 目次
 
 1. [エグゼクティブサマリー](#1-エグゼクティブサマリー)
-2. [要件の5階層と適用範囲](#2-要件の5階層と適用範囲)
-3. [現状アーキテクチャと課題](#3-現状アーキテクチャと課題)
-4. [マルチ施設アーキテクチャ設計](#4-マルチ施設アーキテクチャ設計)
-5. [要件①: 保護者スマートフォン入力](#5-要件-保護者スマートフォン入力)
-6. [要件②: スタッフ共有ビュー](#6-要件-スタッフ共有ビュー)
-7. [要件③: 大学提出用帳票PDF](#7-要件-大学提出用帳票pdf)
-8. [要件④: 経理向けExcel出力](#8-要件-経理向けexcel出力)
-9. [要件⑤: 保護者向け利用明細](#9-要件-保護者向け利用明細)
-10. [データベース拡張設計](#10-データベース拡張設計)
-11. [認証・マルチテナント設計](#11-認証マルチテナント設計)
-12. [LINE連携のマルチ施設拡張](#12-line連携のマルチ施設拡張)
-13. [施設オンボーディングフロー](#13-施設オンボーディングフロー)
-14. [コスト・スケーラビリティ分析](#14-コストスケーラビリティ分析)
-15. [段階的実装ロードマップ](#15-段階的実装ロードマップ)
-16. [リスクと制約](#16-リスクと制約)
+2. [ビジネス要件の整理](#2-ビジネス要件の整理)
+3. [施設ティア分類と機能マトリックス](#3-施設ティア分類と機能マトリックス)
+4. [システムアーキテクチャ (Multi-Tenant)](#4-システムアーキテクチャ-multi-tenant)
+5. [DB スキーマ拡張: マルチテナント化](#5-db-スキーマ拡張-マルチテナント化)
+6. [要件① 保護者スマホ入力](#6-要件-保護者スマホ入力)
+7. [要件② スタッフ共有ビュー (日報)](#7-要件-スタッフ共有ビュー-日報)
+8. [要件③ 大学提出用 PDF](#8-要件-大学提出用-pdf)
+9. [要件④ 経理用 Excel 出力](#9-要件-経理用-excel-出力)
+10. [要件⑤ 保護者利用明細 (PDF)](#10-要件-保護者利用明細-pdf)
+11. [認証・認可アーキテクチャ](#11-認証認可アーキテクチャ)
+12. [LINE連携のマルチテナント化](#12-line連携のマルチテナント化)
+13. [DB マイグレーション計画](#13-db-マイグレーション計画)
+14. [API 設計 (マルチテナント対応)](#14-api-設計-マルチテナント対応)
+15. [施設オンボーディングフロー](#15-施設オンボーディングフロー)
+16. [コスト見積 (30施設規模)](#16-コスト見積-30施設規模)
+17. [実装ロードマップ](#17-実装ロードマップ)
+18. [既存あゆっこシステムからの移行計画](#18-既存あゆっこシステムからの移行計画)
+19. [リスクと未決事項](#19-リスクと未決事項)
+20. [付録](#20-付録)
 
 ---
 
@@ -34,227 +38,1432 @@
 
 ### 1.1 背景
 
-木村さんからのヒアリング（2026-03-04）で、あゆっこ保育所向けに開発中のシステムを**約30の委託保育施設**に展開するビジョンが示された。各要件の適用範囲に差異があり、段階的なマルチ施設対応が必要。
+現在のシステムは「滋賀医科大学学内保育所 あゆっこ」1施設専用で構築されている。木村さんの要望を再整理すると、以下の5つの要件が**約30の委託保育施設**に展開される。
 
 ### 1.2 5つの要件と適用範囲
 
-| # | 要件 | 適用施設数 | 優先度 |
+| # | 要件 | 対象施設数 | 優先度 |
 |---|------|-----------|--------|
-| ① | 保護者がスマホで月次予定を直接入力（紙廃止） | **全30施設** | ★★★ 最高 |
-| ② | スタッフが園児予定を共有閲覧（日報ビュー + 印刷） | **全30施設** | ★★★ 最高 |
-| ③ | 大学提出用PDF（児童利用実績、特別保育、食事記録） | **大半の施設**（標準フォーマット） | ★★ 高 |
-| ④ | 経理向け保育料明細Excel | **2施設のみ** | ★ 中 |
-| ⑤ | 保護者スマホで利用明細PDF閲覧 | **あゆっこのみ** | ★ 中 |
+| ① | 保護者がスマホで月次利用予定を入力（紙廃止） | **全30施設** | ★★★ 最高 |
+| ② | スタッフが園児予定を共有ビュー(日報)で閲覧・印刷 | **全30施設** | ★★★ 最高 |
+| ③ | 大学提出用PDF（利用実績、一時保育時間、食事等） | **多くの施設** (標準フォーマット) | ★★☆ |
+| ④ | 経理用Excel出力（保育料明細、大学への料金サマリー） | **2施設** (あゆっこ等) | ★☆☆ |
+| ⑤ | 保護者利用明細PDF（スマホ閲覧、配布不要） | **1施設** (あゆっこのみ) | ★☆☆ |
 
 ### 1.3 設計原則
 
 ```
-■ 原則1: 「コア共通、カスタム最小」
-  → ①②は全施設共通のコア機能
-  → ③④⑤は施設ごとにON/OFFできるプラグイン
+■ 原則1: 「マルチテナント・シングルインスタンス」
+  → 全施設が同一Cloudflare Workers/D1で稼働
+  → nursery_id でテナント分離（行レベルRLS的）
+  → 施設追加はDBレコード追加のみ、デプロイ不要
 
-■ 原則2: 「テナント分離、データ安全」
-  → nursery_id による論理テナント分離
-  → 施設Aのデータに施設Bの管理者はアクセス不可
-  → 保護者は自分の子のみ閲覧可能
+■ 原則2: 「段階的機能解放」(Feature Tier)
+  → 全施設共通: 保護者入力 + スタッフビュー（①②）
+  → 標準施設: + 大学提出PDF（③）
+  → あゆっこ等: + 経理Excel + 保護者明細（④⑤）
+  → 施設ごとの settings_json で有効/無効制御
 
-■ 原則3: 「あゆっこファースト」
-  → まずあゆっこで全機能を完成・検証
-  → 他施設には段階的に展開（共通機能から先に）
+■ 原則3: 「保護者入力はWebポータル優先」
+  → LINE連携は追加チャネル（Phase 2）
+  → WebポータルはLINE不要、QRコードでアクセス
+  → 全施設で即座に使える汎用性を優先
 
-■ 原則4: 「LINEは入口、Webはバックオフィス」
-  → 保護者の予定入力 = LINE（メイン）+ Webポータル（補助）
-  → スタッフの管理 = Webダッシュボード
-  → 保護者の明細閲覧 = LINEリッチメニュー + Webリンク
-
-■ 原則5: 「施設固有設定はJSONで柔軟に」
-  → 料金体系、開園時間、帳票テンプレート等は施設ごとに設定
-  → 新施設追加はDB操作のみ、コード変更不要
+■ 原則4: 「あゆっこの既存機能を壊さない」
+  → nursery_id = 'ayukko_001' の既存データ・ロジックは維持
+  → 新規施設は新しい nursery_id で追加
+  → 既存のダッシュボード、帳票生成パイプラインはそのまま
 ```
+
+### 1.4 キーとなるアーキテクチャ決定
+
+| 判断項目 | 選択 | 理由 |
+|----------|------|------|
+| テナント分離方式 | 共有DB + 行レベル分離 | 30施設では1DB/施設は管理コスト過大 |
+| 保護者入力手段 | Web ポータル (PWA) | LINE不要で全施設即展開可、LINE は Phase 2 |
+| 認証方式 (保護者) | マジックリンク (SMS/Email) | パスワード不要で保護者の負荷最小 |
+| 認証方式 (スタッフ) | パスワード + TOTP | セキュリティ要件 |
+| PDF生成 | jsPDF + テンプレート定義 | Worker内で完結、標準フォーマット対応 |
+| Excel生成 | ExcelJS (R2テンプレート読込) | あゆっこ固有、2施設のみ |
 
 ---
 
-## 2. 要件の5階層と適用範囲
+## 2. ビジネス要件の整理
 
-### 2.1 要件マッピング (木村さん原文 → 設計)
+### 2.1 要件①: 保護者スマホ入力
 
-```
-木村さん原文 → 設計での機能名 → 適用範囲
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**目的**: 紙の利用予定表を廃止し、保護者がスマートフォンから直接入力する。
 
-① "保護者がスマホで月次利用予定を入力"
-   → Parent Schedule Input (LINE + Web)
-   → 全30施設
+**機能要件**:
+- 保護者は自分の子供の月次利用予定を入力できる
+- 日付ごとに登園時間、降園時間、食事（昼食、おやつ、夕食）を指定
+- パターン入力（「月〜金 8:30-17:00」の一括設定）
+- 特定日の例外設定（休み、時間変更）
+- 入力後の確認画面と修正機能
+- 締切管理（前月末まで変更可、当月はロック）
+- 緊急キャンセル（当月の病欠等）
 
-② "スタッフが日報(園児予定)を共有閲覧＋印刷"
-   → Staff Dashboard (Web)
-   → 全30施設
+**非機能要件**:
+- スマホブラウザで快適に操作（PWA対応）
+- 3G/4G回線でも動作（軽量設計）
+- オフライン時はエラー表示（オフラインキャッシュはPhase 2）
 
-③ "大学提出用PDF(一時保育時間・特別保育・食事)"
-   → University Report PDF Generator
-   → 大半の施設（標準フォーマット準拠）
+### 2.2 要件②: スタッフ共有ビュー
 
-④ "経理向け保育料明細Excel"
-   → Billing Detail Excel Generator
-   → 2施設のみ
+**目的**: 園内スタッフが日ごとの人数・食数を確認し、人員配置・給食発注に使う。
 
-⑤ "保護者向け利用明細PDF(スマホ閲覧)"
-   → Parent Statement PDF (LINE配信)
-   → あゆっこのみ
-```
+**機能要件**:
+- 月間カレンダー表示（日別の予定人数、食数）
+- 日別詳細表示（園児名、登降園時間、食事フラグ）
+- クラス別集計（年齢別、月極/一時）
+- 印刷用レイアウト（A4横、日報形式）
+- 予定と実績の比較表示（ルクミー連携施設のみ）
 
-### 2.2 機能レイヤー図
+**非機能要件**:
+- タブレット・PC対応（スマホは閲覧のみ）
+- 印刷ボタンで即座にA4出力
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Layer 3: 施設固有機能 (Config-driven)                            │
-│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐            │
-│ │ ④ 経理Excel   │  │ ⑤ 保護者明細  │  │ ③ 大学PDF     │            │
-│ │ 2施設         │  │ あゆっこのみ  │  │ 大半の施設    │            │
-│ └──────────────┘  └──────────────┘  └──────────────┘            │
-├─────────────────────────────────────────────────────────────────┤
-│ Layer 2: 共通コア機能 (全施設)                                    │
-│ ┌──────────────────────┐  ┌──────────────────────┐              │
-│ │ ① 保護者スマホ入力     │  │ ② スタッフ共有ビュー   │              │
-│ │   LINE + Web Portal   │  │   Web Dashboard      │              │
-│ └──────────────────────┘  └──────────────────────┘              │
-├─────────────────────────────────────────────────────────────────┤
-│ Layer 1: プラットフォーム基盤                                      │
-│ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────────┐│
-│ │ 認証/認可  │ │ テナント  │ │ DB/Storage│ │ LINE/OpenAI統合基盤  ││
-│ │ (JWT)     │ │ (nursery │ │ (D1/R2)  │ │                     ││
-│ │           │ │  _id)    │ │          │ │                     ││
-│ └──────────┘ └──────────┘ └──────────┘ └──────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-```
+### 2.3 要件③: 大学提出用 PDF
 
----
+**目的**: 大学（委託元）へ提出する児童利用実績を標準フォーマットPDFで生成。
 
-## 3. 現状アーキテクチャと課題
+**機能要件**:
+- 児童利用実績（日別の登降園時間、利用時間）
+- 一時保育の利用時間集計
+- 食事提供実績
+- 特別保育（早朝、延長、夜間、病児）の記録
+- 月次サマリー
 
-### 3.1 現行システムの設計前提
+**非機能要件**:
+- 標準フォーマット（多くの施設で共通）
+- 施設名・ロゴはカスタマイズ可能
+- A4サイズ、白黒印刷対応
 
-現在のあゆっこシステムは**シングルテナント設計**:
+### 2.4 要件④: 経理用 Excel
 
-| 項目 | 現状 | マルチ施設での課題 |
-|------|------|------------------|
-| `nurseries` テーブル | あゆっこ1園 (`ayukko_001`) | 30園分の登録が必要 |
-| `children` テーブル | `nursery_id` FK あり | ✅ テナント分離の基盤はある |
-| `pricing_rules` | あゆっこ固有の料金体系 | 施設ごとに異なる料金設定 |
-| `templates` | あゆっこ固有の帳票テンプレ | 施設ごとのテンプレ管理 |
-| 認証 | なし (全画面公開) | 施設別アクセス制御が必須 |
-| LINE連携 | 1公式アカウント想定 | 複数アカウント or 1アカウント+施設選択 |
-| ダッシュボード | 全園児表示 | 施設別フィルタリング |
+**目的**: 保育料の請求計算結果をExcelで出力し、経理部門・大学事務局に提出。
 
-### 3.2 マルチ施設対応に必要な変更
+**対象**: 2施設（あゆっこ + 1施設）
 
-```
-変更レベル: 🟢 小 / 🟡 中 / 🔴 大
+**機能要件**:
+- 保育料明細（園児別の月額計算）
+- 一時保育料、早朝/延長/夜間/病児の加算
+- 食事代の集計
+- テンプレートExcelへの書き込み（既存フォーマット維持）
 
-🟢 DB: nurseries テーブルに施設を追加するだけ
-🟢 DB: 既存テーブルは nursery_id FK を持っているので構造変更不要
-🟡 API: 全APIに nursery_id スコープフィルタ追加
-🟡 認証: JWT + Role-Based Access Control 導入
-🟡 LINE: 施設別LINEアカウント or 施設選択フロー
-🟡 UI: 施設選択 + 施設別ダッシュボード
-🔴 帳票: 施設ごとのテンプレート・料金体系対応
-🔴 保護者ポータル: 新規開発（Web + LINE Rich Menu連携）
-```
+### 2.5 要件⑤: 保護者利用明細 PDF
+
+**目的**: 保護者がスマホで月次利用・請求内容を確認できる。紙配布不要。
+
+**対象**: 1施設（あゆっこのみ）
+
+**機能要件**:
+- 月次利用日数、利用時間
+- 保育料内訳（月額、一時、加算、食事）
+- 請求合計
+- スマホ表示最適化、PDF保存・印刷対応
 
 ---
 
-## 4. マルチ施設アーキテクチャ設計
+## 3. 施設ティア分類と機能マトリックス
 
-### 4.1 全体アーキテクチャ
+### 3.1 ティア定義
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                       保護者層                                    │
-│                                                                   │
-│   ┌───────────┐  ┌───────────┐  ┌───────────┐                    │
-│   │ LINE App  │  │ Web Portal│  │ PDF Viewer │                    │
-│   │ (予定入力)  │  │ (予定入力)  │  │ (明細閲覧)  │                    │
-│   └─────┬─────┘  └─────┬─────┘  └─────┬─────┘                    │
-├─────────┼───────────────┼───────────────┼─────────────────────────┤
-│         │               │               │          スタッフ層       │
-│         │               │               │                          │
-│         │     ┌─────────────────────┐   │    ┌──────────────────┐  │
-│         │     │ Staff Dashboard     │   │    │ Super Admin      │  │
-│         │     │ (施設別ダッシュボード)  │   │    │ (全施設管理)      │  │
-│         │     └─────────┬───────────┘   │    └────────┬─────────┘  │
-├─────────┼───────────────┼───────────────┼────────────┼─────────────┤
-│                         │                                          │
-│   ┌─────────────────────▼──────────────────────────────────────┐   │
-│   │                  Cloudflare Workers/Pages                   │   │
-│   │                                                             │   │
-│   │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌──────────────┐  │   │
-│   │  │ Auth    │  │ LINE    │  │ Schedule │  │ Report       │  │   │
-│   │  │ Module  │  │ Webhook │  │ API      │  │ Generator    │  │   │
-│   │  │         │  │ Handler │  │          │  │              │  │   │
-│   │  └────┬────┘  └────┬────┘  └────┬────┘  └──────┬───────┘  │   │
-│   │       │            │            │               │          │   │
-│   │  ┌────▼────────────▼────────────▼───────────────▼────────┐ │   │
-│   │  │              Tenant Router (nursery_id scope)          │ │   │
-│   │  └────────────────────────┬────────────────────────────── │ │   │
-│   │                           │                                │   │
-│   │  ┌────────────────────────▼──────────────────────────────┐ │   │
-│   │  │     D1 Database           │     R2 Storage            │ │   │
-│   │  │ (全施設共有、論理分離)       │ (テンプレ/帳票/PDF)        │ │   │
-│   │  └───────────────────────────┴───────────────────────────┘ │   │
-│   └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│   ┌──────────────┐  ┌──────────────┐                                │
-│   │ LINE Platform │  │ OpenAI API   │                                │
-│   └──────────────┘  └──────────────┘                                │
-└─────────────────────────────────────────────────────────────────────┘
+Tier 1: Basic (全施設共通) — 約25施設
+  ├── 保護者スマホ入力 (①)
+  ├── スタッフ共有ビュー (②)
+  └── 基本ダッシュボード
+
+Tier 2: Standard (大学提出あり) — 約3施設
+  ├── Tier 1 全機能
+  ├── 大学提出用 PDF (③)
+  └── 標準レポート生成
+
+Tier 3: Premium (フル機能) — 2施設 (あゆっこ等)
+  ├── Tier 2 全機能
+  ├── 経理用 Excel (④)
+  ├── 保護者利用明細 PDF (⑤)
+  ├── ルクミー連携
+  └── Python Generator パイプライン
 ```
 
-### 4.2 テナント分離戦略
+### 3.2 機能マトリックス
 
-**選択: 論理テナント分離 (共有DB + nursery_id フィルタ)**
+| 機能 | Tier 1 | Tier 2 | Tier 3 | 実装方式 |
+|------|--------|--------|--------|----------|
+| 保護者 Web ポータル | ✅ | ✅ | ✅ | Cloudflare Workers + PWA |
+| LINE 予定入力 | Phase2 | Phase2 | Phase2 | LINE Messaging API |
+| スタッフ管理画面 | ✅ | ✅ | ✅ | 既存 Hono + 拡張 |
+| 園児マスタ管理 | ✅ | ✅ | ✅ | children テーブル |
+| 日別人数・食数集計 | ✅ | ✅ | ✅ | schedule_plans 集計 |
+| 印刷用レイアウト | ✅ | ✅ | ✅ | CSS @media print |
+| 大学提出 PDF | ❌ | ✅ | ✅ | jsPDF テンプレート |
+| ルクミー連携 | ❌ | ❌ | ✅ | CSV/Excel パーサー |
+| 経理 Excel | ❌ | ❌ | ✅ | ExcelJS + R2 テンプレ |
+| 保護者利用明細 PDF | ❌ | ❌ | ✅ | jsPDF / pdf-lib |
+| Python Generator | ❌ | ❌ | ✅ | 既存パイプライン |
+| 料金自動計算 | 簡易 | 簡易 | フル | charge-calculator |
 
-| 戦略 | メリット | デメリット | 採用 |
-|------|---------|----------|------|
-| DB分離 (施設ごとにDB) | 完全分離 | D1の数制限、管理複雑 | ❌ |
-| 論理分離 (nursery_id FK) | 管理容易、コスト低 | SQLインジェクションリスク | ✅ |
-| ハイブリッド | バランス | 複雑 | 将来検討 |
+### 3.3 施設設定 (settings_json 拡張)
 
-**理由**: 
-- Cloudflare D1は1プロジェクトあたりのDB数に制限がある
-- 30施設分のDBを個別管理するのは運用負荷が大きい
-- `nursery_id` FKが既に全テーブルに存在（children, pricing_rules, templates等）
-- APIミドルウェアで強制フィルタリングすれば安全
+```json
+{
+  "tier": "basic|standard|premium",
+  "features": {
+    "parent_portal": true,
+    "line_integration": false,
+    "university_pdf": false,
+    "accounting_excel": false,
+    "parent_statement_pdf": false,
+    "lukumi_integration": false,
+    "python_generator": false,
+    "auto_pricing": false
+  },
+  "branding": {
+    "display_name": "○○保育所",
+    "short_name": "○○",
+    "logo_r2_key": null,
+    "primary_color": "#3B82F6"
+  },
+  "schedule_rules": {
+    "deadline_day": 0,
+    "allow_emergency_cancel": true,
+    "open_time": "07:30",
+    "close_time": "20:00",
+    "operating_days": ["mon","tue","wed","thu","fri"],
+    "meal_types": ["lunch","pm_snack"],
+    "has_early_morning": false,
+    "has_extension": false,
+    "has_night": false,
+    "has_sick_care": false
+  },
+  "contact": {
+    "phone": "XXX-XXXX-XXXX",
+    "email": "info@example.com"
+  }
+}
+```
 
-### 4.3 テナントスコープミドルウェア設計
+**`deadline_day` の意味**:
+- `0`: 前月末日が締切（デフォルト、あゆっこと同じ）
+- `25`: 前月25日が締切
+- `-1`: 締切なし（いつでも変更可能）
+
+---
+
+## 4. システムアーキテクチャ (Multi-Tenant)
+
+### 4.1 アーキテクチャ概要
+
+```
+┌────────────────┐    ┌────────────────┐    ┌────────────────┐
+│   保護者 A園    │    │   保護者 B園    │    │   保護者 C園    │
+│   (スマホ)      │    │   (スマホ)      │    │   (スマホ)      │
+└───────┬────────┘    └───────┬────────┘    └───────┬────────┘
+        │                     │                     │
+        └─────────┬───────────┴─────────────────────┘
+                  │
+     ┌────────────▼─────────────┐
+     │  Cloudflare Workers/Pages │
+     │  (Single Deployment)      │
+     │                           │
+     │  ┌────────────────────┐  │
+     │  │ /p/:nurserySlug/*  │  │     ← 保護者ポータル
+     │  │ Parent Portal      │  │
+     │  └────────────────────┘  │
+     │  ┌────────────────────┐  │
+     │  │ /s/:nurserySlug/*  │  │     ← スタッフ管理画面
+     │  │ Staff Dashboard    │  │
+     │  └────────────────────┘  │
+     │  ┌────────────────────┐  │
+     │  │ /api/:nurserySlug/*│  │     ← API (テナント分離)
+     │  │ Multi-tenant API   │  │
+     │  └────────────────────┘  │
+     │  ┌────────────────────┐  │
+     │  │ /admin/*           │  │     ← 全施設統括管理
+     │  │ Super Admin        │  │
+     │  └────────────────────┘  │
+     │           │               │
+     │  ┌────────▼───────────┐  │
+     │  │   D1 Database      │  │     ← 共有DB (行レベル分離)
+     │  │   (nursery_id)     │  │
+     │  └────────────────────┘  │
+     │  ┌────────────────────┐  │
+     │  │   R2 Storage       │  │     ← テンプレ・生成物
+     │  │   /{nursery_id}/   │  │
+     │  └────────────────────┘  │
+     └───────────────────────────┘
+                  │
+     ┌────────────▼─────────────┐     (Tier 3 施設のみ)
+     │  Python Generator        │
+     │  (あゆっこ専用パイプライン)│
+     └──────────────────────────┘
+```
+
+### 4.2 URL設計
+
+```
+保護者ポータル:
+  https://hoikuen.pages.dev/p/{nursery_slug}/
+  https://hoikuen.pages.dev/p/{nursery_slug}/schedule
+  https://hoikuen.pages.dev/p/{nursery_slug}/statement (Tier 3のみ)
+
+スタッフ管理画面:
+  https://hoikuen.pages.dev/s/{nursery_slug}/
+  https://hoikuen.pages.dev/s/{nursery_slug}/dashboard
+  https://hoikuen.pages.dev/s/{nursery_slug}/children
+  https://hoikuen.pages.dev/s/{nursery_slug}/reports
+
+API:
+  https://hoikuen.pages.dev/api/{nursery_slug}/schedules
+  https://hoikuen.pages.dev/api/{nursery_slug}/children
+  https://hoikuen.pages.dev/api/{nursery_slug}/reports
+
+全施設統括管理:
+  https://hoikuen.pages.dev/admin/
+  https://hoikuen.pages.dev/admin/nurseries
+  https://hoikuen.pages.dev/admin/stats
+
+LINE Webhook (全施設共通):
+  https://hoikuen.pages.dev/api/line/webhook
+```
+
+**nursery_slug の例**:
+- `ayukko` → 滋賀医科大学学内保育所 あゆっこ (nursery_id: ayukko_001)
+- `sakura` → さくら保育所 (nursery_id: sakura_001)
+- `himawari` → ひまわり保育園 (nursery_id: himawari_001)
+
+### 4.3 テナント解決ミドルウェア
 
 ```typescript
-// src/middleware/tenant-scope.ts
+// 概念設計: 全APIリクエストで nursery_id を解決
+// 実装はコミットしない（設計ドキュメントのみ）
 
-import { Hono } from 'hono';
+async function resolveNursery(slug: string, db: D1Database) {
+  const nursery = await db.prepare(
+    `SELECT id, name, settings_json FROM nurseries WHERE slug = ? AND is_active = 1`
+  ).bind(slug).first();
+  
+  if (!nursery) throw new HTTPException(404, { message: 'Facility not found' });
+  
+  return {
+    id: nursery.id,
+    name: nursery.name,
+    settings: JSON.parse(nursery.settings_json || '{}'),
+  };
+}
+```
 
-/**
- * 全APIリクエストに nursery_id スコープを強制付与
- * - JWT内のnursery_idを取得
- * - 全DBクエリにWHERE nursery_id = ? を自動付与
- * - スーパー管理者は全施設アクセス可
- */
-export function tenantScope() {
+### 4.4 R2 ストレージのテナント分離
+
+```
+R2 キー構造:
+  {nursery_id}/templates/{template_type}/{filename}
+  {nursery_id}/outputs/{job_id}/{filename}
+  {nursery_id}/parent_statements/{year}/{month}/{child_id}.pdf
+
+例:
+  ayukko_001/templates/daily_report/日報202604.xlsx
+  ayukko_001/outputs/job_abc123/billing_detail_202604.xlsx
+  sakura_001/templates/daily_report/日報テンプレート.xlsx
+```
+
+---
+
+## 5. DB スキーマ拡張: マルチテナント化
+
+### 5.1 既存テーブルの変更
+
+#### `nurseries` テーブル拡張
+
+```sql
+-- 新カラム追加
+ALTER TABLE nurseries ADD COLUMN slug TEXT UNIQUE;
+ALTER TABLE nurseries ADD COLUMN is_active INTEGER DEFAULT 1;
+ALTER TABLE nurseries ADD COLUMN tier TEXT DEFAULT 'basic' 
+  CHECK(tier IN ('basic', 'standard', 'premium'));
+ALTER TABLE nurseries ADD COLUMN contact_json TEXT DEFAULT '{}';
+
+-- 既存データへの slug 設定
+UPDATE nurseries SET slug = 'ayukko', tier = 'premium' WHERE id = 'ayukko_001';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_nurseries_slug ON nurseries(slug);
+```
+
+### 5.2 認証関連テーブル (新規)
+
+#### `staff_accounts` --- スタッフアカウント
+
+```sql
+CREATE TABLE IF NOT EXISTS staff_accounts (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  nursery_id TEXT NOT NULL REFERENCES nurseries(id),
+  email TEXT NOT NULL,
+  password_hash TEXT NOT NULL,          -- bcrypt/argon2id
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'staff'
+    CHECK(role IN ('owner','admin','staff','viewer')),
+  is_active INTEGER DEFAULT 1,
+  totp_secret TEXT,                      -- TOTP認証 (optional)
+  last_login_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(nursery_id, email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_nursery ON staff_accounts(nursery_id);
+```
+
+#### `parent_accounts` --- 保護者アカウント
+
+```sql
+CREATE TABLE IF NOT EXISTS parent_accounts (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  nursery_id TEXT NOT NULL REFERENCES nurseries(id),
+  email TEXT,                            -- マジックリンク用
+  phone TEXT,                            -- SMS認証用 (optional)
+  name TEXT NOT NULL,                    -- 保護者氏名
+  auth_method TEXT DEFAULT 'magic_link'
+    CHECK(auth_method IN ('magic_link', 'sms', 'line', 'password')),
+  is_active INTEGER DEFAULT 1,
+  last_login_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(nursery_id, email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_parent_nursery ON parent_accounts(nursery_id);
+```
+
+#### `parent_children` --- 保護者→児童マッピング
+
+```sql
+CREATE TABLE IF NOT EXISTS parent_children (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  parent_id TEXT NOT NULL REFERENCES parent_accounts(id),
+  child_id TEXT NOT NULL REFERENCES children(id),
+  relationship TEXT DEFAULT 'parent'
+    CHECK(relationship IN ('parent','grandparent','guardian','other')),
+  is_primary INTEGER DEFAULT 1,          -- 主保護者フラグ
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(parent_id, child_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pc_parent ON parent_children(parent_id);
+CREATE INDEX IF NOT EXISTS idx_pc_child ON parent_children(child_id);
+```
+
+#### `auth_sessions` --- 認証セッション
+
+```sql
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  account_type TEXT NOT NULL CHECK(account_type IN ('staff', 'parent', 'admin')),
+  account_id TEXT NOT NULL,
+  nursery_id TEXT REFERENCES nurseries(id),
+  token_hash TEXT NOT NULL UNIQUE,        -- セッショントークンのハッシュ
+  user_agent TEXT,
+  ip_address TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON auth_sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_account ON auth_sessions(account_type, account_id);
+```
+
+#### `magic_links` --- マジックリンク
+
+```sql
+CREATE TABLE IF NOT EXISTS magic_links (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  parent_id TEXT NOT NULL REFERENCES parent_accounts(id),
+  token TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,               -- 15分後
+  used_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_magic_token ON magic_links(token);
+```
+
+### 5.3 schedule_plans テーブルの変更
+
+```sql
+-- 提出ステータス管理カラム追加
+ALTER TABLE schedule_plans ADD COLUMN submitted_by TEXT;  -- parent_account_id or 'staff'
+ALTER TABLE schedule_plans ADD COLUMN submitted_at TEXT;
+
+-- 月次提出状態管理テーブル (新規)
+CREATE TABLE IF NOT EXISTS schedule_submissions (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  child_id TEXT NOT NULL REFERENCES children(id),
+  nursery_id TEXT NOT NULL REFERENCES nurseries(id),
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK(status IN ('draft', 'submitted', 'confirmed', 'locked')),
+  submitted_by TEXT,                     -- parent_account_id
+  submitted_at TEXT,
+  confirmed_by TEXT,                     -- staff_account_id
+  confirmed_at TEXT,
+  locked_at TEXT,                        -- 自動ロック日時
+  total_days INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(child_id, year, month)
+);
+
+CREATE INDEX IF NOT EXISTS idx_submissions_nursery 
+  ON schedule_submissions(nursery_id, year, month);
+CREATE INDEX IF NOT EXISTS idx_submissions_child 
+  ON schedule_submissions(child_id, year, month);
+```
+
+### 5.4 報告書テンプレート管理テーブル (新規)
+
+```sql
+-- 標準レポートテンプレート定義
+CREATE TABLE IF NOT EXISTS report_templates (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  nursery_id TEXT REFERENCES nurseries(id),  -- NULL = 全施設共通テンプレ
+  template_type TEXT NOT NULL CHECK(template_type IN (
+    'university_pdf',        -- 大学提出用PDF (③)
+    'accounting_excel',      -- 経理用Excel (④)
+    'parent_statement_pdf',  -- 保護者利用明細PDF (⑤)
+    'daily_summary_pdf',     -- 日報PDF
+    'staff_schedule_pdf'     -- スタッフ用予定表
+  )),
+  template_name TEXT NOT NULL,
+  config_json TEXT NOT NULL,              -- レイアウト定義 (JSON)
+  r2_key TEXT,                            -- Excelテンプレの場合
+  is_default INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_templates_nursery 
+  ON report_templates(nursery_id, template_type);
+```
+
+### 5.5 ER図 (拡張後)
+
+```
+                    ┌────────────────────┐
+                    │    nurseries       │
+                    │ (施設マスタ)        │
+                    │ + slug             │
+                    │ + tier             │
+                    │ + settings_json    │
+                    └─────────┬──────────┘
+                              │ 1
+           ┌──────────────────┼──────────────────┐
+           │                  │                  │
+     ┌─────▼──────┐    ┌─────▼──────┐    ┌─────▼──────┐
+     │ children   │    │ staff_     │    │ parent_    │
+     │ (園児)     │    │ accounts   │    │ accounts   │
+     └──────┬─────┘    │ (職員)     │    │ (保護者)   │
+            │          └────────────┘    └──────┬─────┘
+            │ 1                                 │
+     ┌──────┼───────────────────┐         ┌─────▼──────┐
+     │      │                   │         │ parent_    │
+     │ ┌────▼──────┐    ┌──────▼────┐    │ children   │
+     │ │ schedule_ │    │ schedule_ │    │ (紐付け)   │
+     │ │ plans     │    │ submissions│    └────────────┘
+     │ │ (日別予定) │    │ (月次状態) │
+     │ └───────────┘    └───────────┘
+     │
+     │ ┌────────────────┐
+     ├─┤ attendance_    │  (Tier 3のみ)
+     │ │ records        │
+     │ └────────────────┘
+     │ ┌────────────────┐
+     ├─┤ usage_facts    │  (Tier 3のみ)
+     │ └────────────────┘
+     │ ┌────────────────┐
+     └─┤ charge_lines   │  (Tier 3のみ)
+       └────────────────┘
+
+LINE連携 (Phase 2):
+     ┌────────────────┐    ┌────────────────┐
+     │ line_accounts  │    │ line_          │
+     │                │    │ conversations  │
+     └────────────────┘    └────────────────┘
+```
+
+---
+
+## 6. 要件① 保護者スマホ入力
+
+### 6.1 設計方針
+
+```
+Phase 1 (全30施設に即展開):
+  → Webポータル (PWA) で保護者がスマホブラウザから入力
+  → 認証: マジックリンク (Email) or 連携コード + PIN
+  → LINE不要、アプリダウンロード不要
+
+Phase 2 (希望施設のみ):
+  → LINE Messaging API 連携
+  → AI会話ヒアリング
+  → LINE_SCHEDULE_COLLECTION_PLAN.md v3.0 参照
+```
+
+### 6.2 保護者Webポータル画面設計
+
+#### ログイン画面
+
+```
+┌─────────────────────────────────────┐
+│  🏠 ○○保育所                        │
+│                                      │
+│  利用予定 入力ポータル                │
+│                                      │
+│  ┌────────────────────────────────┐  │
+│  │ メールアドレス                  │  │
+│  │ [example@email.com          ]  │  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  ┌────────────────────────────────┐  │
+│  │ 📧 ログインリンクを送信        │  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  または                              │
+│                                      │
+│  ┌────────────────────────────────┐  │
+│  │ 連携コード: [AYK-    ]         │  │
+│  │ PIN:        [****   ]          │  │
+│  │    [🔑 ログイン]               │  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  📞 お困りの方は保育所にご連絡      │
+│     ください (XXX-XXXX)              │
+└─────────────────────────────────────┘
+```
+
+#### 予定入力画面 (メイン)
+
+```
+┌─────────────────────────────────────┐
+│  ← 戻る   ○○ちゃんの予定   4月 ▼   │
+├─────────────────────────────────────┤
+│                                      │
+│  📋 基本パターン設定                 │
+│  ┌────────────────────────────────┐  │
+│  │ 利用曜日: [月][火][水][木][金] │  │
+│  │ 登園時間: [08:30 ▼]           │  │
+│  │ 降園時間: [17:00 ▼]           │  │
+│  │ 昼食: [✓]  おやつ: [✓]        │  │
+│  │ 夕食: [ ]                      │  │
+│  │                                │  │
+│  │ [📅 カレンダーに一括反映]      │  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  📅 カレンダー (タップで個別編集)    │
+│  ┌──┬──┬──┬──┬──┬──┬──┐           │
+│  │月│火│水│木│金│土│日│           │
+│  ├──┼──┼──┼──┼──┼──┼──┤           │
+│  │ 1│ 2│ 3│ 4│ 5│  │  │           │
+│  │8:3│8:3│8:3│8:3│8:3│  │  │        │
+│  │🍱│🍱│🍱│🍱│🍱│  │  │           │
+│  ├──┼──┼──┼──┼──┼──┼──┤           │
+│  │ 7│ 8│ 9│10│11│  │  │           │
+│  │8:3│8:3│8:3│❌│8:3│  │  │        │
+│  │🍱│🍱│🍱│休│🍱│  │  │           │
+│  └──┴──┴──┴──┴──┴──┴──┘           │
+│  ...                                 │
+│                                      │
+│  ┌────────────────────────────────┐  │
+│  │ ✅ 確認して提出 (19日分)       │  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  ⚠️ 提出期限: 3月31日まで           │
+└─────────────────────────────────────┘
+```
+
+#### 確認画面
+
+```
+┌─────────────────────────────────────┐
+│  ← 修正   予定の確認   ○○ちゃん     │
+├─────────────────────────────────────┤
+│                                      │
+│  📅 2026年4月の利用予定              │
+│                                      │
+│  基本パターン: 月〜金 8:30-17:00     │
+│  食事: 午前おやつ + 昼食 + 午後おやつ │
+│                                      │
+│  📋 詳細:                            │
+│  ┌────────────────────────────────┐  │
+│  │ 4/1(水) 8:30-17:00 🍙🍱🍪    │  │
+│  │ 4/2(木) 8:30-17:00 🍙🍱🍪    │  │
+│  │ 4/3(金) 8:30-17:00 🍙🍱🍪    │  │
+│  │ 4/7(月) 8:30-17:00 🍙🍱🍪    │  │
+│  │ ...                            │  │
+│  │ 4/10(木) お休み ❌              │  │
+│  │ ...                            │  │
+│  │ 4/15(火) 8:30-19:00 🍙🍱🍪🍽 │  │
+│  │ ...                            │  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  合計: 19日利用 / 1日お休み          │
+│                                      │
+│  ┌────────────────────────────────┐  │
+│  │ ✅ この内容で提出する           │  │
+│  └────────────────────────────────┘  │
+│  ┌────────────────────────────────┐  │
+│  │ ✏️ 修正する                    │  │
+│  └────────────────────────────────┘  │
+└─────────────────────────────────────┘
+```
+
+### 6.3 保護者ポータル技術設計
+
+```
+技術スタック:
+  ├── HTML + TailwindCSS + Vanilla JS (CDN)
+  ├── PWA manifest.json (ホーム画面追加対応)
+  ├── Service Worker (キャッシュ: CSS/JS/画像のみ)
+  ├── Hono で HTML をサーバーサイド生成
+  └── API 通信は fetch (Axios不要)
+
+認証フロー:
+  1. 保護者が /p/{slug}/ にアクセス
+  2. メールアドレス入力 → マジックリンク送信
+  3. リンククリック → セッショントークン発行 (HttpOnly Cookie)
+  4. 以降はCookieで自動認証 (30日有効)
+  
+  代替: 連携コード + 4桁PIN
+  → 初回のみ入力、以降は Cookie
+
+ページ構成 (SPA的にタブ切替):
+  /p/{slug}/          → ログイン
+  /p/{slug}/home      → 子供一覧 + 月選択
+  /p/{slug}/schedule  → 予定入力カレンダー
+  /p/{slug}/confirm   → 確認画面
+  /p/{slug}/history   → 過去の提出履歴
+  /p/{slug}/statement → 利用明細 (Tier 3のみ)
+```
+
+### 6.4 パターン入力ロジック
+
+```
+入力パターン → 日別データ展開のロジック:
+
+1. 保護者が「基本パターン」を設定:
+   曜日: [月,火,水,木,金]
+   登園: 08:30
+   降園: 17:00
+   食事: 昼食 + 午後おやつ
+
+2. システムが対象月のカレンダーを展開:
+   a. 指定曜日の全日にパターン適用
+   b. 祝日を検出して⚠️マーク
+   c. 食事フラグを時間帯から自動推定
+
+3. 保護者が個別日を修正:
+   a. 特定日を「お休み」に設定
+   b. 特定日の時間を変更
+   c. 特定日の食事を変更
+
+4. 全営業日カバー確認 → 提出
+```
+
+### 6.5 締切・ロック制御
+
+```typescript
+// 施設ごとの締切ルール
+function getDeadline(nursery: NurserySettings, targetYear: number, targetMonth: number): Date {
+  const deadlineDay = nursery.schedule_rules.deadline_day;
+  
+  if (deadlineDay === -1) {
+    // 締切なし → 無期限
+    return new Date(9999, 11, 31);
+  }
+  
+  if (deadlineDay === 0) {
+    // 前月末日 (デフォルト)
+    return new Date(targetYear, targetMonth - 1, 0, 23, 59, 59);
+  }
+  
+  // 前月の指定日
+  return new Date(targetYear, targetMonth - 2, deadlineDay, 23, 59, 59);
+}
+```
+
+---
+
+## 7. 要件② スタッフ共有ビュー (日報)
+
+### 7.1 設計方針
+
+既存のダッシュボード（v6.1）を施設別対応に拡張する。
+
+```
+既存 (あゆっこ専用):
+  /api/schedules/dashboard?year=2026&month=4
+
+マルチテナント版:
+  /api/{slug}/schedules/dashboard?year=2026&month=4
+  → nursery_id でフィルタリング
+```
+
+### 7.2 日報 (印刷用) レイアウト
+
+```
+┌────────────────────────────────────────────────────┐
+│ ○○保育所 園児登園予定表  2026年4月                  │
+├────────────────────────────────────────────────────┤
+│                                                     │
+│  日付: 4月1日(水)                                   │
+│  予定人数: 22名 (月極18名 / 一時4名)                │
+│                                                     │
+│  ┌──────┬──────┬────────┬────────┬──┬──┬──┬──┐     │
+│  │クラス│園児名│登園予定│降園予定│昼│朝│午│夕│     │
+│  ├──────┼──────┼────────┼────────┼──┼──┼──┼──┤     │
+│  │0歳  │○○  │ 8:30  │ 17:00 │〇│〇│〇│  │     │
+│  │0歳  │△△  │ 9:00  │ 16:00 │〇│  │〇│  │     │
+│  │1歳  │□□  │ 8:00  │ 18:30 │〇│〇│〇│〇│     │
+│  │...   │...   │ ...    │ ...    │..│..│..│..│     │
+│  ├──────┴──────┴────────┴────────┼──┼──┼──┼──┤     │
+│  │ 合計                          │20│15│22│ 3│     │
+│  └───────────────────────────────┴──┴──┴──┴──┘     │
+│                                                     │
+│  印刷日時: 2026-03-20 10:30                         │
+└────────────────────────────────────────────────────┘
+```
+
+### 7.3 印刷対応CSS設計
+
+```css
+@media print {
+  /* ナビゲーション非表示 */
+  nav, .no-print, .sidebar { display: none !important; }
+  
+  /* A4横向き */
+  @page { size: A4 landscape; margin: 10mm; }
+  
+  /* テーブル全幅 */
+  .print-table { width: 100%; font-size: 10pt; }
+  .print-table th, .print-table td { 
+    border: 1px solid #333; padding: 2px 4px; 
+  }
+  
+  /* ページ区切り */
+  .page-break { page-break-before: always; }
+}
+```
+
+---
+
+## 8. 要件③ 大学提出用 PDF
+
+### 8.1 標準フォーマット設計
+
+**多くの施設で共通の標準レポート**。施設固有のテンプレートExcelは不要。
+
+```
+標準 大学提出用 PDF 構成:
+  ページ1: 月次利用サマリー
+    - 施設名、年月
+    - 園児一覧 (氏名、年齢、利用日数、月極/一時)
+    - 月間合計利用人日
+
+  ページ2-N: 園児別利用実績
+    - 園児氏名、クラス
+    - 日別: 登園時間、降園時間、利用時間、食事
+    - 月間合計: 利用日数、総利用時間
+    - 特別保育の記録 (早朝、延長、夜間、病児)
+
+  最終ページ: 食事提供実績
+    - 日別: 昼食数、おやつ数、夕食数
+    - 月間合計
+```
+
+### 8.2 PDF生成方式
+
+```
+Tier 2 (標準): 
+  → jsPDF で Worker 内生成
+  → 日本語フォント: Noto Sans JP (サブセット, ~500KB)
+  → テンプレート: JSON定義 (report_templates テーブル)
+  → 施設のロゴ・名称はカスタマイズ可能
+
+Tier 3 (あゆっこ等):
+  → 既存の Python Generator パイプラインも併用可能
+  → ExcelJS でテンプレートベース生成
+  → PDFへの変換は pdf-lib or jsPDF
+```
+
+### 8.3 標準PDF テンプレート定義 (config_json)
+
+```json
+{
+  "type": "university_pdf",
+  "version": "1.0",
+  "page_size": "A4",
+  "orientation": "portrait",
+  "sections": [
+    {
+      "type": "header",
+      "content": {
+        "title": "{nursery_name} 月次利用報告書",
+        "subtitle": "{year}年{month}月",
+        "logo_position": "left"
+      }
+    },
+    {
+      "type": "summary_table",
+      "columns": ["園児名", "クラス", "区分", "利用日数", "利用時間合計"],
+      "data_source": "children_monthly_summary"
+    },
+    {
+      "type": "page_break"
+    },
+    {
+      "type": "child_detail",
+      "repeat_per": "child",
+      "columns": ["日", "曜", "登園", "降園", "利用時間", "昼食", "おやつ", "夕食", "備考"],
+      "data_source": "child_daily_records"
+    },
+    {
+      "type": "meal_summary",
+      "title": "食事提供実績",
+      "columns": ["日", "曜", "昼食数", "おやつ数", "夕食数"],
+      "data_source": "daily_meal_counts"
+    }
+  ]
+}
+```
+
+---
+
+## 9. 要件④ 経理用 Excel 出力
+
+### 9.1 設計方針
+
+**2施設のみ**のため、あゆっこの既存パイプライン（ExcelJS + テンプレート）を他1施設にも適用。
+
+```
+既存 (あゆっこ):
+  テンプレート: あゆっこ_保育料明細.xlsx (R2保存)
+  生成: ExcelJS で数量列に書き込み
+  → 数式列は触らない原則
+
+追加1施設:
+  テンプレート: その施設固有のExcelテンプレートをR2にアップロード
+  mapping_json でセル位置を定義
+  → 既存の templates テーブル + mapping_json で対応
+```
+
+### 9.2 テンプレートマッピング汎用化
+
+```json
+{
+  "billing_detail": {
+    "sheet_name_pattern": "{month}月",
+    "child_start_row": 5,
+    "child_row_stride": 1,
+    "columns": {
+      "name": "K",
+      "birth_date": "L",
+      "age": "M",
+      "enrollment_type": "N",
+      "enrolled_at": "O",
+      "collection_method": "Q",
+      "spot_count": "T",
+      "early_morning_count": "W",
+      "extension_count": "Z",
+      "night_count": "AC",
+      "sick_count": "AF",
+      "lunch_count": "AI",
+      "am_snack_count": "AL",
+      "pm_snack_count": "AO",
+      "dinner_count": "AR"
+    },
+    "formula_columns": ["R","S","V","Y","AB","AE","AH","AK","AN","AQ","AT"],
+    "readonly_columns": ["U","X","AA","AD","AG","AJ","AM","AP","AS"]
+  }
+}
+```
+
+---
+
+## 10. 要件⑤ 保護者利用明細 (PDF)
+
+### 10.1 設計方針
+
+**あゆっこ1施設のみ**。保護者がスマホの保護者ポータルからPDFを閲覧・ダウンロード。
+
+```
+生成タイミング:
+  月次帳票生成完了後 → 自動で保護者別PDF生成 → R2保存
+  保護者がポータルにログイン → R2から取得してブラウザ表示
+
+アクセス制御:
+  /p/ayukko/statement?year=2026&month=4
+  → 認証済み保護者のみ
+  → 自分の子供の明細のみ表示
+```
+
+### 10.2 明細PDF内容
+
+```
+┌────────────────────────────────────┐
+│  滋賀医科大学学内保育所 あゆっこ    │
+│  利用明細書                         │
+│                                     │
+│  2026年4月分                        │
+│  ○○ ○○ さま                       │
+│                                     │
+│  ■ ご利用実績                      │
+│  利用日数: 19日                     │
+│  月極保育料: ¥45,000               │
+│                                     │
+│  ■ 追加料金                        │
+│  ┌────────────┬────┬──────┬──────┐ │
+│  │ 項目        │回数│単価  │小計  │ │
+│  ├────────────┼────┼──────┼──────┤ │
+│  │ 延長保育    │  2 │ ¥300 │ ¥600│ │
+│  │ 昼食        │ 19 │ ¥300 │¥5700│ │
+│  │ 午前おやつ  │ 19 │  ¥50 │ ¥950│ │
+│  │ 午後おやつ  │ 19 │ ¥100 │¥1900│ │
+│  ├────────────┴────┴──────┼──────┤ │
+│  │ 合計                    │¥54150│ │
+│  └─────────────────────────┴──────┘ │
+│                                     │
+│  ■ 日別利用内訳                    │
+│  (日付、登降園時間、食事の表)       │
+│                                     │
+│  発行日: 2026-05-05                 │
+└────────────────────────────────────┘
+```
+
+---
+
+## 11. 認証・認可アーキテクチャ
+
+### 11.1 認証方式一覧
+
+| 利用者 | 方式 | 詳細 |
+|--------|------|------|
+| 保護者 | マジックリンク (Email) | パスワード不要、メール認証 |
+| 保護者 (代替) | 連携コード + PIN | メール未登録の場合 |
+| 保護者 (LINE) | LINE Login | Phase 2、LINE連携施設のみ |
+| スタッフ | Email + パスワード | 標準認証 |
+| スタッフ (強化) | + TOTP | 管理者ロール以上 |
+| スーパー管理者 | Email + パスワード + TOTP | 全施設管理者 |
+
+### 11.2 ロール定義
+
+```
+super_admin:  全施設を管理。施設の追加・削除・設定変更。
+owner:        自施設の全機能。スタッフアカウント管理。
+admin:        自施設の管理機能。園児・保護者管理。帳票生成。
+staff:        自施設の閲覧+予定入力代行。ダッシュボード。
+viewer:       自施設の閲覧のみ。
+parent:       自分の子供の予定入力・明細閲覧。
+```
+
+### 11.3 認可マトリックス
+
+| 操作 | super_admin | owner | admin | staff | viewer | parent |
+|------|------------|-------|-------|-------|--------|--------|
+| 施設追加 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 施設設定変更 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| スタッフ管理 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 園児管理 | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| 保護者管理 | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| ダッシュボード | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| 予定入力 (代行) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| 帳票生成 | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| 自分の子の予定入力 | - | - | - | - | - | ✅ |
+| 利用明細閲覧 | - | - | - | - | - | ✅ |
+
+### 11.4 JWT / セッション設計
+
+```typescript
+// セッショントークン方式 (HttpOnly Cookie)
+// JWT は Cloudflare Workers の 10ms制限内で検証負荷が懸念されるため
+// ランダムトークン + DB lookup を採用
+
+interface Session {
+  token: string;        // 32バイトランダム (hex)
+  account_type: 'staff' | 'parent' | 'admin';
+  account_id: string;
+  nursery_id: string;
+  role: string;
+  expires_at: Date;
+}
+
+// Cookie 設定
+Set-Cookie: session={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000
+```
+
+---
+
+## 12. LINE連携のマルチテナント化
+
+### 12.1 方針
+
+```
+Phase 1 (Webポータルのみ):
+  → LINE連携なし
+  → 全施設が Web ポータルで保護者入力
+  → LINE_SCHEDULE_COLLECTION_PLAN.md の内容は Phase 2
+
+Phase 2 (LINE連携):
+  方式A: 1つのLINE公式アカウントを全施設共有
+    → 保護者が施設コードを入力して施設を選択
+    → 管理コスト低、LINE料金1アカウント分
+    → ただし保護者体験がやや複雑
+
+  方式B: 施設ごとにLINE公式アカウント
+    → 施設ごとに独立 (Channel ID/Secret/Token)
+    → 保護者体験はシンプル
+    → LINE料金 x 施設数
+
+  推奨: 方式A (共有アカウント)
+    → line_accounts テーブルに nursery_id カラム追加
+    → 連携コードに施設情報を含める (AYK-XXXX → 施設+児童を特定)
+```
+
+### 12.2 LINE連携テーブルの変更 (Phase 2用)
+
+```sql
+-- 既存設計 (v2.0) からの変更点
+-- line_accounts に nursery_id 追加
+ALTER TABLE line_accounts ADD COLUMN nursery_id TEXT REFERENCES nurseries(id);
+
+-- link_codes は既に nursery_id を持っている → 変更不要
+
+-- line_conversations に nursery_id 追加
+ALTER TABLE line_conversations ADD COLUMN nursery_id TEXT REFERENCES nurseries(id);
+```
+
+---
+
+## 13. DB マイグレーション計画
+
+### 13.1 マイグレーションファイル一覧
+
+```
+migrations/
+├── 0001_initial_schema.sql          (既存: あゆっこ基盤)
+├── 0002_line_integration.sql        (既存設計: LINE連携テーブル)
+├── 0003_multi_tenant.sql            (新規: マルチテナント化)
+├── 0004_auth_system.sql             (新規: 認証テーブル)
+├── 0005_schedule_submissions.sql    (新規: 提出状態管理)
+├── 0006_report_templates.sql        (新規: 標準レポートテンプレ)
+└── 0007_add_breakfast_flag.sql      (将来: 朝食フラグ)
+```
+
+### 13.2 0003_multi_tenant.sql
+
+```sql
+-- ================================================================
+-- migrations/0003_multi_tenant.sql
+-- Purpose: マルチテナント対応 (nurseries テーブル拡張)
+-- Depends: 0001_initial_schema.sql
+-- ================================================================
+
+-- nurseries テーブルへのカラム追加
+ALTER TABLE nurseries ADD COLUMN slug TEXT;
+ALTER TABLE nurseries ADD COLUMN is_active INTEGER DEFAULT 1;
+ALTER TABLE nurseries ADD COLUMN tier TEXT DEFAULT 'basic';
+ALTER TABLE nurseries ADD COLUMN contact_json TEXT DEFAULT '{}';
+
+-- 既存あゆっこデータの更新
+UPDATE nurseries 
+SET slug = 'ayukko', 
+    tier = 'premium',
+    settings_json = json_set(
+      COALESCE(settings_json, '{}'),
+      '$.tier', 'premium',
+      '$.features.parent_portal', 1,
+      '$.features.line_integration', 0,
+      '$.features.university_pdf', 1,
+      '$.features.accounting_excel', 1,
+      '$.features.parent_statement_pdf', 1,
+      '$.features.lukumi_integration', 1,
+      '$.features.python_generator', 1,
+      '$.features.auto_pricing', 1
+    )
+WHERE id = 'ayukko_001';
+
+-- slug にユニークインデックス
+CREATE UNIQUE INDEX IF NOT EXISTS idx_nurseries_slug ON nurseries(slug);
+```
+
+### 13.3 0004_auth_system.sql
+
+```sql
+-- ================================================================
+-- migrations/0004_auth_system.sql
+-- Purpose: 認証・認可テーブル
+-- Depends: 0001_initial_schema.sql, 0003_multi_tenant.sql
+-- ================================================================
+
+-- スタッフアカウント
+CREATE TABLE IF NOT EXISTS staff_accounts (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  nursery_id TEXT NOT NULL REFERENCES nurseries(id),
+  email TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'staff'
+    CHECK(role IN ('super_admin','owner','admin','staff','viewer')),
+  is_active INTEGER DEFAULT 1,
+  totp_secret TEXT,
+  last_login_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(nursery_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_staff_nursery ON staff_accounts(nursery_id);
+
+-- 保護者アカウント
+CREATE TABLE IF NOT EXISTS parent_accounts (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  nursery_id TEXT NOT NULL REFERENCES nurseries(id),
+  email TEXT,
+  phone TEXT,
+  name TEXT NOT NULL,
+  auth_method TEXT DEFAULT 'magic_link'
+    CHECK(auth_method IN ('magic_link', 'sms', 'line', 'code_pin')),
+  pin_hash TEXT,
+  is_active INTEGER DEFAULT 1,
+  last_login_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(nursery_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_parent_nursery ON parent_accounts(nursery_id);
+
+-- 保護者⇔児童マッピング
+CREATE TABLE IF NOT EXISTS parent_children (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  parent_id TEXT NOT NULL REFERENCES parent_accounts(id),
+  child_id TEXT NOT NULL REFERENCES children(id),
+  relationship TEXT DEFAULT 'parent'
+    CHECK(relationship IN ('parent','grandparent','guardian','other')),
+  is_primary INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(parent_id, child_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pc_parent ON parent_children(parent_id);
+CREATE INDEX IF NOT EXISTS idx_pc_child ON parent_children(child_id);
+
+-- 認証セッション
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  account_type TEXT NOT NULL CHECK(account_type IN ('staff', 'parent', 'super_admin')),
+  account_id TEXT NOT NULL,
+  nursery_id TEXT REFERENCES nurseries(id),
+  token_hash TEXT NOT NULL UNIQUE,
+  user_agent TEXT,
+  ip_address TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_token ON auth_sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_account ON auth_sessions(account_type, account_id);
+
+-- マジックリンク
+CREATE TABLE IF NOT EXISTS magic_links (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  parent_id TEXT NOT NULL REFERENCES parent_accounts(id),
+  token TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_magic_token ON magic_links(token);
+```
+
+### 13.4 0005_schedule_submissions.sql
+
+```sql
+-- ================================================================
+-- migrations/0005_schedule_submissions.sql
+-- Purpose: 予定提出状態管理
+-- Depends: 0001_initial_schema.sql, 0003_multi_tenant.sql
+-- ================================================================
+
+-- schedule_plans への追加カラム
+ALTER TABLE schedule_plans ADD COLUMN submitted_by TEXT;
+ALTER TABLE schedule_plans ADD COLUMN submitted_at TEXT;
+
+-- 月次提出状態
+CREATE TABLE IF NOT EXISTS schedule_submissions (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  child_id TEXT NOT NULL REFERENCES children(id),
+  nursery_id TEXT NOT NULL REFERENCES nurseries(id),
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK(status IN ('draft', 'submitted', 'confirmed', 'locked')),
+  submitted_by TEXT,
+  submitted_at TEXT,
+  confirmed_by TEXT,
+  confirmed_at TEXT,
+  locked_at TEXT,
+  total_days INTEGER DEFAULT 0,
+  notes TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(child_id, year, month)
+);
+CREATE INDEX IF NOT EXISTS idx_submissions_nursery 
+  ON schedule_submissions(nursery_id, year, month);
+CREATE INDEX IF NOT EXISTS idx_submissions_status 
+  ON schedule_submissions(nursery_id, status);
+```
+
+### 13.5 0006_report_templates.sql
+
+```sql
+-- ================================================================
+-- migrations/0006_report_templates.sql
+-- Purpose: 標準レポートテンプレート管理
+-- Depends: 0001_initial_schema.sql, 0003_multi_tenant.sql
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS report_templates (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  nursery_id TEXT REFERENCES nurseries(id),
+  template_type TEXT NOT NULL CHECK(template_type IN (
+    'university_pdf', 'accounting_excel', 'parent_statement_pdf',
+    'daily_summary_pdf', 'staff_schedule_pdf'
+  )),
+  template_name TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  r2_key TEXT,
+  is_default INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_report_templates_nursery 
+  ON report_templates(nursery_id, template_type);
+
+-- デフォルトテンプレート (全施設共通)
+INSERT OR IGNORE INTO report_templates (id, nursery_id, template_type, template_name, config_json, is_default)
+VALUES (
+  'tpl_university_default',
+  NULL,
+  'university_pdf',
+  '標準 大学提出用レポート',
+  '{"type":"university_pdf","version":"1.0","page_size":"A4","orientation":"portrait","sections":[{"type":"header","content":{"title":"{nursery_name} 月次利用報告書","subtitle":"{year}年{month}月"}},{"type":"summary_table","columns":["園児名","クラス","区分","利用日数"],"data_source":"children_monthly_summary"},{"type":"child_detail","repeat_per":"child","columns":["日","曜","登園","降園","利用時間","昼食","おやつ","夕食"],"data_source":"child_daily_records"},{"type":"meal_summary","title":"食事提供実績","columns":["日","曜","昼食数","おやつ数","夕食数"],"data_source":"daily_meal_counts"}]}',
+  1
+);
+
+INSERT OR IGNORE INTO report_templates (id, nursery_id, template_type, template_name, config_json, is_default)
+VALUES (
+  'tpl_daily_summary_default',
+  NULL,
+  'daily_summary_pdf',
+  '標準 日報PDF',
+  '{"type":"daily_summary_pdf","version":"1.0","page_size":"A4","orientation":"landscape","sections":[{"type":"header","content":{"title":"{nursery_name} 園児登園予定表","subtitle":"{year}年{month}月{day}日({weekday})"}},{"type":"children_table","columns":["クラス","園児名","登園","降園","昼食","朝おやつ","午後おやつ","夕食"],"data_source":"daily_schedule"}]}',
+  1
+);
+```
+
+---
+
+## 14. API 設計 (マルチテナント対応)
+
+### 14.1 API エンドポイント一覧
+
+#### 認証 API
+
+| Method | Path | 説明 | 認証 |
+|--------|------|------|------|
+| POST | `/api/auth/staff/login` | スタッフログイン | 不要 |
+| POST | `/api/auth/parent/magic-link` | マジックリンク送信 | 不要 |
+| GET | `/api/auth/parent/verify/:token` | マジックリンク検証 | 不要 |
+| POST | `/api/auth/parent/code-login` | 連携コード+PINログイン | 不要 |
+| POST | `/api/auth/logout` | ログアウト | 要 |
+| GET | `/api/auth/me` | 現在のユーザー情報 | 要 |
+
+#### 施設管理 API (super_admin)
+
+| Method | Path | 説明 |
+|--------|------|------|
+| GET | `/api/admin/nurseries` | 全施設一覧 |
+| POST | `/api/admin/nurseries` | 施設追加 |
+| PUT | `/api/admin/nurseries/:id` | 施設設定変更 |
+| GET | `/api/admin/stats` | 全施設統計 |
+
+#### テナント API (施設別)
+
+| Method | Path | 説明 | 最低ロール |
+|--------|------|------|-----------|
+| GET | `/api/:slug/children` | 園児一覧 | staff |
+| POST | `/api/:slug/children` | 園児追加 | admin |
+| PUT | `/api/:slug/children/:id` | 園児更新 | admin |
+| GET | `/api/:slug/schedules` | 予定一覧 | staff |
+| POST | `/api/:slug/schedules` | 予定登録 | staff/parent |
+| GET | `/api/:slug/schedules/dashboard` | ダッシュボード | staff |
+| GET | `/api/:slug/schedules/submissions` | 提出状態一覧 | staff |
+| GET | `/api/:slug/reports/university` | 大学提出PDF生成 | admin |
+| GET | `/api/:slug/reports/daily/:date` | 日報PDF生成 | staff |
+| GET | `/api/:slug/staff` | スタッフ一覧 | owner |
+| POST | `/api/:slug/staff` | スタッフ追加 | owner |
+| GET | `/api/:slug/parents` | 保護者一覧 | admin |
+| POST | `/api/:slug/parents` | 保護者追加 | admin |
+| POST | `/api/:slug/parents/:id/link-code` | 連携コード発行 | admin |
+
+#### 保護者 API
+
+| Method | Path | 説明 |
+|--------|------|------|
+| GET | `/api/:slug/parent/children` | 自分の子供一覧 |
+| GET | `/api/:slug/parent/schedule/:childId` | 予定取得 |
+| POST | `/api/:slug/parent/schedule/:childId` | 予定入力 |
+| PUT | `/api/:slug/parent/schedule/:childId` | 予定修正 |
+| POST | `/api/:slug/parent/schedule/:childId/submit` | 予定提出 |
+| POST | `/api/:slug/parent/schedule/:childId/cancel` | 緊急キャンセル |
+| GET | `/api/:slug/parent/statement/:childId` | 利用明細取得 |
+
+### 14.2 テナント分離ミドルウェア設計
+
+```typescript
+// 概念設計のみ (コード実装はしない)
+
+// 1. slug → nursery_id 解決
+app.use('/api/:slug/*', async (c, next) => {
+  const slug = c.req.param('slug');
+  const nursery = await resolveNursery(slug, c.env.DB);
+  c.set('nursery', nursery);
+  await next();
+});
+
+// 2. 認証ミドルウェア
+app.use('/api/:slug/*', async (c, next) => {
+  const token = getCookie(c, 'session');
+  if (!token) return c.json({ error: 'Unauthorized' }, 401);
+  
+  const session = await validateSession(token, c.env.DB);
+  if (!session) return c.json({ error: 'Session expired' }, 401);
+  
+  // テナント分離: セッションの nursery_id と URL の nursery が一致するか
+  const nursery = c.get('nursery');
+  if (session.nursery_id !== nursery.id && session.role !== 'super_admin') {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  
+  c.set('session', session);
+  await next();
+});
+
+// 3. ロールチェック
+function requireRole(...roles: string[]) {
   return async (c, next) => {
-    const user = c.get('user'); // JWT decoded payload
-    
-    if (!user) {
-      return c.json({ error: 'Unauthorized' }, 401);
+    const session = c.get('session');
+    if (!roles.includes(session.role)) {
+      return c.json({ error: 'Insufficient permissions' }, 403);
     }
-    
-    if (user.role === 'super_admin') {
-      // スーパー管理者: nursery_id はリクエストパラメータから
-      const nurseryId = c.req.query('nursery_id') || c.req.header('X-Nursery-ID');
-      c.set('nursery_id', nurseryId); // null = 全施設
-    } else {
-      // 施設スタッフ/保護者: JWT内のnursery_idを強制
-      c.set('nursery_id', user.nursery_id);
-    }
-    
     await next();
   };
 }
@@ -262,968 +1471,301 @@ export function tenantScope() {
 
 ---
 
-## 5. 要件①: 保護者スマートフォン入力
+## 15. 施設オンボーディングフロー
 
-> **適用: 全30施設 ★★★**
-> "保護者がスマホで毎月の利用予定（日付・時間・食事）を直接入力。紙を廃止する。"
-
-### 5.1 入力チャネル設計
-
-```
-保護者の入力手段:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1. LINE (メインチャネル) ← LINE_SCHEDULE_COLLECTION_PLAN.md
-   ・AIヒアリング形式で自然言語入力
-   ・Flex Message でボタン操作
-   ・リマインド Push通知
-   ・利便性 ★★★
-
-2. Web Portal (サブチャネル) ← 新規設計
-   ・カレンダーUI でタッチ入力
-   ・LINE非利用者への代替手段
-   ・PC/タブレットからも入力可能
-   ・利便性 ★★
-
-3. スタッフ代行入力 (バックアップ)
-   ・管理画面から園児を選んで入力
-   ・紙を受け取った場合の過渡期運用
-   ・既存実装 (v6.0)
-   ・利便性 ★
-```
-
-### 5.2 保護者Webポータル設計
-
-**LINE設計は既存のLINE_SCHEDULE_COLLECTION_PLAN.mdに定義済み。ここではWebポータルを設計。**
-
-#### URL構成
-```
-https://{domain}/parent/login          -- ログイン画面
-https://{domain}/parent/schedule       -- 予定入力画面 (メイン)
-https://{domain}/parent/schedule/edit  -- 予定修正画面
-https://{domain}/parent/statement      -- 利用明細閲覧 (要件⑤)
-https://{domain}/parent/profile        -- プロフィール/児童情報確認
-```
-
-#### ログイン方式
-```
-方式A: LINE Login (LIFF) ← 推奨
-  ・LINE友だち追加 → LIFFアプリ起動 → 自動ログイン
-  ・LINE userId で自動紐付け
-  ・追加認証不要
-
-方式B: マジックリンク (Email/SMS)
-  ・メールアドレス or 電話番号入力
-  ・一時リンク送信 → クリックでログイン
-  ・LINE非利用者向け
-
-方式C: 連携コード + パスワード
-  ・初回: 連携コード (AYK-XXXX) + パスワード設定
-  ・2回目以降: メアド + パスワード
-```
-
-#### 予定入力UI (スマホ最適化)
-
-```
-┌─────────────────────────────┐
-│ ◀ 2026年4月の予定          ▶ │
-│ ○○ちゃん (0歳児)             │
-├─────────────────────────────┤
-│                              │
-│ 基本パターン設定:             │
-│ ┌──────────────────────────┐│
-│ │ 利用曜日: [月][火][水][木][金] ││
-│ │ 登園: [08:30] 降園: [17:00] ││
-│ │ 昼食 [✓] おやつAM [✓]     ││
-│ │ おやつPM [✓] 夕食 [ ]     ││
-│ └──────────────────────────┘│
-│                              │
-│ [パターンを全日に適用]         │
-│                              │
-│ ━━ カレンダー ━━              │
-│ 月 火 水 木 金 土 日           │
-│  1  2  3  4  5  6  7         │
-│ ✅ ✅ ✅ ✅ ✅  -  -          │
-│  8  9 10 11 12 13 14         │
-│ ✅ ✅ ❌ ✅ ✅  -  -          │
-│ ...                          │
-│                              │
-│ 例外日:                       │
-│ 4/10 (木) → お休み ❌         │
-│ 4/15 (火) → 8:30-19:00 🍽    │
-│ [+ 例外日を追加]              │
-│                              │
-│ ━━━━━━━━━━━━━━━━━            │
-│ 合計: 19日利用 / 22営業日     │
-│                              │
-│ [プレビュー] [提出する]       │
-│                              │
-│ 変更締切: 3月31日まで         │
-└─────────────────────────────┘
-```
-
-### 5.3 施設別設定項目
-
-```json
-{
-  "nursery_id": "facility_xxx",
-  "schedule_input_config": {
-    "enabled_channels": ["line", "web", "staff"],
-    "deadline_rule": "previous_month_end",
-    "emergency_cancel_allowed": true,
-    "required_fields": {
-      "planned_start": true,
-      "planned_end": true,
-      "lunch_flag": true,
-      "am_snack_flag": true,
-      "pm_snack_flag": true,
-      "dinner_flag": true,
-      "breakfast_flag": false
-    },
-    "business_hours": {
-      "open": "07:30",
-      "close": "20:00",
-      "early_start": "07:00"
-    },
-    "reminders": {
-      "enabled": true,
-      "first_reminder_day": 15,
-      "followup_reminder_day": 25
-    }
-  }
-}
-```
-
----
-
-## 6. 要件②: スタッフ共有ビュー
-
-> **適用: 全30施設 ★★★**
-> "日ごとの登園予定・食数を確認して人員配置・給食発注に使いたい。印刷もしたい。"
-
-### 6.1 現行ダッシュボード (v6.1) の状態
-
-**既に実装済みの機能**:
-- ✅ 月間カレンダー表示 (`loadDashboardFromDB`)
-- ✅ 日別人数・食数集計 (`/api/schedules/dashboard`)
-- ✅ クラス別人数 (0歳~5歳 + 一時)
-- ✅ 今日/明日/今週/月間のビュー切替
-- ✅ ファイルアップロード不要（DB直結）
-
-**マルチ施設対応で必要な拡張**:
-- 🟡 施設選択ドロップダウン (スーパー管理者用)
-- 🟡 施設別認証 (スタッフは自施設のみ)
-- 🟡 印刷最適化CSS (`@media print`)
-- 🟢 施設名表示のダッシュボードヘッダ
-
-### 6.2 マルチ施設ダッシュボード拡張
-
-```
-┌─────────────────────────────────────────────────────────┐
-│ 🏠 施設: [あゆっこ保育所 ▼]  2026年4月  [◀][▶]         │
-│                                                          │
-│ [今日] [明日] [今週] [月間]                               │
-│                                                          │
-│ ━━ 本日 (4/8 火曜日) ━━                                  │
-│ 登園予定: 25名 (0歳:4 / 1歳:6 / 2歳:8 / 一時:7)         │
-│ 食事: 昼食25 / AMおやつ20 / PMおやつ25 / 夕食3           │
-│                                                          │
-│ [🖨 印刷]                                                │
-│                                                          │
-│ ┌─────┬──────┬──────┬──────┬──────┬──────┬──────┐        │
-│ │ 園児 │ 登園  │ 降園  │ 昼食  │AMお  │PMお  │ 夕食  │        │
-│ ├─────┼──────┼──────┼──────┼──────┼──────┼──────┤        │
-│ │田中太│ 8:30 │17:00 │ ○   │ ○   │ ○   │      │        │
-│ │山田花│ 7:00 │18:30 │ ○   │ ○   │ ○   │ ○   │        │
-│ │...  │      │      │      │      │      │      │        │
-│ └─────┴──────┴──────┴──────┴──────┴──────┴──────┘        │
-│                                                          │
-│ ━━ 提出状況 ━━                                            │
-│ 連携済保護者: 28名 / 30名                                 │
-│ 予定提出済: 22名 ✅ / 未提出: 6名 ⚠️                     │
-│ [リマインド送信] [未提出者一覧]                            │
-└─────────────────────────────────────────────────────────┘
-```
-
-### 6.3 印刷対応設計
-
-```css
-/* 印刷用CSS */
-@media print {
-  /* ヘッダ/フッタ/ナビゲーション非表示 */
-  nav, .no-print, .tab-bar { display: none !important; }
-  
-  /* A4横 */
-  @page { size: A4 landscape; margin: 10mm; }
-  
-  /* テーブルをフル幅に */
-  .dashboard-table { 
-    width: 100%;
-    font-size: 9pt;
-    border-collapse: collapse;
-  }
-  .dashboard-table td, .dashboard-table th {
-    border: 1px solid #000;
-    padding: 2px 4px;
-  }
-  
-  /* 施設名・日付をヘッダに */
-  .print-header { display: block !important; }
-}
-```
-
----
-
-## 7. 要件③: 大学提出用帳票PDF
-
-> **適用: 大半の施設（標準フォーマット）**
-> "児童の利用実績（一時保育の預かり時間、特別保育、食事記録）をPDFで生成。"
-
-### 7.1 標準フォーマット vs 施設固有
-
-```
-大学提出帳票の類型:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-A) 標準フォーマット ← 大半の施設
-   ・児童実績表（登降園時刻、利用時間、一時利用ブロック数）
-   ・食事提供実績（昼食/おやつ/夕食の実績数）
-   ・特別保育記録（早朝/延長/夜間/病児）
-   → PDF Generator で共通テンプレートから生成
-
-B) カスタムフォーマット ← 一部施設
-   ・大学独自のExcelテンプレートに書き込み
-   → あゆっこのように施設固有テンプレートを登録・管理
-```
-
-### 7.2 標準帳票PDF設計
-
-```
-┌─────────────────────────────────────────────────┐
-│         児童利用実績報告書                         │
-│                                                   │
-│ 施設名: ○○保育所                                 │
-│ 対象月: 2026年4月                                 │
-│ 報告日: 2026年5月1日                              │
-│                                                   │
-│ ━━ 園児別利用実績 ━━                              │
-│ ┌─────┬────┬────┬────┬────┬────┬────┬────┐      │
-│ │園児名│利用│一時│早朝│延長│夜間│病児│食事│      │
-│ │      │日数│ブロ│回数│回数│回数│回数│日数│      │
-│ ├─────┼────┼────┼────┼────┼────┼────┼────┤      │
-│ │田中太│ 19 │  - │  2 │  1 │  0 │  0 │ 19 │      │
-│ │山田花│ 15 │ 30 │  0 │  3 │  1 │  0 │ 15 │      │
-│ │...  │    │    │    │    │    │    │    │      │
-│ └─────┴────┴────┴────┴────┴────┴────┴────┘      │
-│                                                   │
-│ ━━ 食事提供実績 ━━                                │
-│ ┌──────┬──────┬──────┬──────┬──────┐              │
-│ │ 日付  │ 昼食  │AMおや│PMおや│ 夕食  │              │
-│ ├──────┼──────┼──────┼──────┼──────┤              │
-│ │ 4/1  │  22  │  18  │  22  │   3  │              │
-│ │ 4/2  │  23  │  19  │  23  │   2  │              │
-│ │ ...  │      │      │      │      │              │
-│ └──────┴──────┴──────┴──────┴──────┘              │
-└─────────────────────────────────────────────────┘
-```
-
-### 7.3 帳票ON/OFF設定
-
-```json
-{
-  "nursery_id": "facility_xxx",
-  "report_config": {
-    "university_report_pdf": {
-      "enabled": true,
-      "format": "standard",
-      "includes": ["attendance_summary", "meal_summary", "special_care_summary"],
-      "submission_deadline_day": 5
-    },
-    "custom_excel_template": {
-      "enabled": false,
-      "template_r2_key": null
-    }
-  }
-}
-```
-
----
-
-## 8. 要件④: 経理向けExcel出力
-
-> **適用: 2施設のみ**
-> "保育料の明細をExcelで出力し、経理に渡す。大学への料金提出にも使う。"
-
-### 8.1 現行の実装状況
-
-```
-あゆっこの保育料明細Excel:
-  ・テンプレート: あゆっこ_保育料明細.xlsx
-  ・月別シート構成
-  ・charge_lines テーブルから数量を書き込み
-  ・数式列は触らない（書き込みセル最小化原則）
-  ・Python Generator で生成
-  ✅ 設計済み・部分実装済み
-```
-
-### 8.2 マルチ施設対応
-
-2施設のみなので、施設ごとにテンプレートをアップロード・管理する方式:
-
-```
-施設A (あゆっこ):
-  templates/ → nursery_id=ayukko_001, template_type=billing_detail
-  料金: pricing_rules (nursery_id=ayukko_001, fiscal_year=2025)
-
-施設B (2施設目):
-  templates/ → nursery_id=facility_002, template_type=billing_detail
-  料金: pricing_rules (nursery_id=facility_002, fiscal_year=2025)
-
-他28施設:
-  billing_detail: enabled = false (不要)
-```
-
----
-
-## 9. 要件⑤: 保護者向け利用明細
-
-> **適用: あゆっこのみ**
-> "保護者が利用明細PDFをスマホで閲覧。別途紙での配布は不要。"
-
-### 9.1 配信フロー
-
-```
-月次処理 (月初5営業日)
-  1. 帳票生成ジョブ実行
-  2. 保護者向け利用明細PDF生成 (charge_lines → PDF)
-  3. R2 に保存 (nursery_id/year/month/child_id.pdf)
-  4. LINE Push Message で通知:
-     "4月分の利用明細が確認できます。
-      [明細を見る]"  ← LIFF or Web URL
-  5. 保護者がLINEリッチメニューから閲覧
-
-閲覧URL:
-  https://{domain}/parent/statement?year=2026&month=4
-  → JWT認証 → 自分の子のPDFのみ表示
-  → R2からプリサインドURL生成 → PDF表示
-```
-
-### 9.2 利用明細PDF内容
-
-```
-┌─────────────────────────────────────────────────┐
-│         利用明細書                                │
-│                                                   │
-│ ○○保育所                                        │
-│ 保護者様: 田中 様                                │
-│ 園児名: 田中太郎（0歳児クラス）                   │
-│ 対象月: 2026年4月                                │
-│                                                   │
-│ ━━ 利用日数: 19日 ━━                              │
-│                                                   │
-│ ┌─────────────────────────────────────────┐      │
-│ │ 項目              │ 数量  │ 単価  │ 金額  │      │
-│ ├──────────────────┼──────┼──────┼──────┤      │
-│ │ 月極保育料        │  1   │45,000│45,000│      │
-│ │ 早朝保育          │  2回 │  300 │   600│      │
-│ │ 延長保育          │  1回 │  300 │   300│      │
-│ │ 昼食              │ 19食 │  300 │ 5,700│      │
-│ │ 午前おやつ        │ 15食 │   50 │   750│      │
-│ │ 午後おやつ        │ 19食 │  100 │ 1,900│      │
-│ │ 夕食              │  1食 │  300 │   300│      │
-│ ├──────────────────┼──────┼──────┼──────┤      │
-│ │ 合計              │      │      │54,550│      │
-│ └─────────────────────────────────────────┘      │
-│                                                   │
-│ ━━ 利用詳細 ━━                                    │
-│ 4/1(火) 8:30-17:00 昼・AMお・PMお                │
-│ 4/2(水) 7:00-17:00 昼・AMお・PMお [早朝]         │
-│ ...                                              │
-│ 4/15(火) 8:30-19:00 昼・AMお・PMお・夕 [延長]    │
-│ ...                                              │
-│ 4/10(木) お休み                                  │
-└─────────────────────────────────────────────────┘
-```
-
----
-
-## 10. データベース拡張設計
-
-### 10.1 既存テーブルへの影響
-
-**変更不要** (既に `nursery_id` FK を持つ):
-- `children` (nursery_id あり)
-- `pricing_rules` (nursery_id あり)
-- `templates` (nursery_id あり)
-- `jobs` (nursery_id あり)
-- `name_mappings` (nursery_id あり)
-- `schedule_plans` (children.nursery_id 経由)
-- `attendance_records` (children.nursery_id 経由)
-- `usage_facts` (children.nursery_id 経由)
-- `charge_lines` (children.nursery_id 経由)
-
-### 10.2 新規テーブル
-
-#### 10.2.1 `nursery_settings` — 施設別設定
-
-```sql
-CREATE TABLE IF NOT EXISTS nursery_settings (
-  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-  nursery_id TEXT NOT NULL REFERENCES nurseries(id),
-  setting_key TEXT NOT NULL,
-  setting_value TEXT NOT NULL,  -- JSON
-  updated_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(nursery_id, setting_key)
-);
-
-CREATE INDEX IF NOT EXISTS idx_nursery_settings_nursery 
-  ON nursery_settings(nursery_id);
-```
-
-設定キー例:
-```
-schedule_input_config   -- 予定入力設定 (チャネル、締切ルール等)
-report_config           -- 帳票生成設定 (ON/OFF、フォーマット)
-line_config             -- LINE連携設定 (チャネルID等)
-business_hours          -- 営業時間
-meal_config             -- 食事設定 (提供する食事種別)
-feature_flags           -- 機能ON/OFF
-```
-
-#### 10.2.2 `users` — ユーザーアカウント
-
-```sql
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-  email TEXT UNIQUE,
-  password_hash TEXT,                       -- bcrypt
-  role TEXT NOT NULL CHECK(role IN (
-    'super_admin', 'nursery_admin', 'staff', 'parent'
-  )),
-  nursery_id TEXT REFERENCES nurseries(id), -- NULLならsuper_admin
-  display_name TEXT,
-  line_user_id TEXT,                        -- LINE連携時
-  is_active INTEGER DEFAULT 1,
-  last_login_at TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_users_nursery ON users(nursery_id);
-CREATE INDEX IF NOT EXISTS idx_users_line ON users(line_user_id);
-```
-
-#### 10.2.3 `user_children` — 保護者-児童紐付け
-
-```sql
-CREATE TABLE IF NOT EXISTS user_children (
-  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-  user_id TEXT NOT NULL REFERENCES users(id),
-  child_id TEXT NOT NULL REFERENCES children(id),
-  relationship TEXT DEFAULT 'parent',       -- 'parent', 'guardian'
-  created_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(user_id, child_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_children_user ON user_children(user_id);
-CREATE INDEX IF NOT EXISTS idx_user_children_child ON user_children(child_id);
-```
-
-#### 10.2.4 `sessions` — ログインセッション
-
-```sql
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY,                      -- JWT jti
-  user_id TEXT NOT NULL REFERENCES users(id),
-  expires_at TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-```
-
-### 10.3 `nurseries` テーブル拡張
-
-```sql
--- 既存テーブルに列追加
-ALTER TABLE nurseries ADD COLUMN short_code TEXT;       -- 施設コード (例: 'AYK')
-ALTER TABLE nurseries ADD COLUMN region TEXT;            -- 地域
-ALTER TABLE nurseries ADD COLUMN contact_email TEXT;
-ALTER TABLE nurseries ADD COLUMN contact_phone TEXT;
-ALTER TABLE nurseries ADD COLUMN is_active INTEGER DEFAULT 1;
-ALTER TABLE nurseries ADD COLUMN features_json TEXT DEFAULT '{}';
--- features_json 例:
--- {
---   "schedule_input": true,       // 要件①
---   "staff_dashboard": true,      // 要件②
---   "university_report": true,    // 要件③
---   "billing_excel": false,       // 要件④ (2施設のみ)
---   "parent_statement": false     // 要件⑤ (あゆっこのみ)
--- }
-```
-
-### 10.4 マイグレーション計画
-
-```sql
--- ================================================================
--- migrations/0003_multi_facility.sql
--- マルチ施設対応 + 認証基盤
--- ================================================================
-
--- 1. nurseries テーブル拡張
-ALTER TABLE nurseries ADD COLUMN short_code TEXT;
-ALTER TABLE nurseries ADD COLUMN region TEXT;
-ALTER TABLE nurseries ADD COLUMN contact_email TEXT;
-ALTER TABLE nurseries ADD COLUMN contact_phone TEXT;
-ALTER TABLE nurseries ADD COLUMN is_active INTEGER DEFAULT 1;
-ALTER TABLE nurseries ADD COLUMN features_json TEXT DEFAULT '{"schedule_input":true,"staff_dashboard":true,"university_report":true,"billing_excel":false,"parent_statement":false}';
-
--- 既存のあゆっこに全機能ON
-UPDATE nurseries SET 
-  short_code = 'AYK',
-  features_json = '{"schedule_input":true,"staff_dashboard":true,"university_report":true,"billing_excel":true,"parent_statement":true}'
-WHERE id = 'ayukko_001';
-
--- 2. ユーザーテーブル
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-  email TEXT UNIQUE,
-  password_hash TEXT,
-  role TEXT NOT NULL CHECK(role IN (
-    'super_admin', 'nursery_admin', 'staff', 'parent'
-  )),
-  nursery_id TEXT REFERENCES nurseries(id),
-  display_name TEXT,
-  line_user_id TEXT,
-  is_active INTEGER DEFAULT 1,
-  last_login_at TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_users_nursery ON users(nursery_id);
-CREATE INDEX IF NOT EXISTS idx_users_line ON users(line_user_id);
-
--- 3. 保護者-児童紐付け
-CREATE TABLE IF NOT EXISTS user_children (
-  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-  user_id TEXT NOT NULL REFERENCES users(id),
-  child_id TEXT NOT NULL REFERENCES children(id),
-  relationship TEXT DEFAULT 'parent',
-  created_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(user_id, child_id)
-);
-CREATE INDEX IF NOT EXISTS idx_user_children_user ON user_children(user_id);
-CREATE INDEX IF NOT EXISTS idx_user_children_child ON user_children(child_id);
-
--- 4. セッション
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  expires_at TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-
--- 5. 施設別設定
-CREATE TABLE IF NOT EXISTS nursery_settings (
-  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-  nursery_id TEXT NOT NULL REFERENCES nurseries(id),
-  setting_key TEXT NOT NULL,
-  setting_value TEXT NOT NULL,
-  updated_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(nursery_id, setting_key)
-);
-CREATE INDEX IF NOT EXISTS idx_nursery_settings_nursery ON nursery_settings(nursery_id);
-```
-
----
-
-## 11. 認証・マルチテナント設計
-
-### 11.1 ロールモデル
-
-```
-┌───────────────────────────────────────────────────────────┐
-│ Role: super_admin (スーパー管理者)                          │
-│ ・全施設のデータにアクセス可                                │
-│ ・施設の新規登録・設定変更                                  │
-│ ・ユーザー管理（施設管理者の作成）                          │
-│ ・nursery_id = NULL（全施設スコープ）                       │
-├───────────────────────────────────────────────────────────┤
-│ Role: nursery_admin (施設管理者)                            │
-│ ・自施設のデータにのみアクセス                              │
-│ ・園児登録、連携コード発行、帳票生成                        │
-│ ・スタッフアカウント管理                                    │
-│ ・nursery_id = 特定施設                                    │
-├───────────────────────────────────────────────────────────┤
-│ Role: staff (スタッフ)                                     │
-│ ・自施設のダッシュボード閲覧                                │
-│ ・予定入力（スタッフ代行）                                  │
-│ ・帳票ダウンロード                                         │
-│ ・nursery_id = 特定施設                                    │
-├───────────────────────────────────────────────────────────┤
-│ Role: parent (保護者)                                      │
-│ ・自分の子の予定入力のみ                                    │
-│ ・自分の子の利用明細閲覧のみ                                │
-│ ・LINE連携 or Webポータルからアクセス                       │
-│ ・nursery_id = 特定施設 + child_id スコープ                │
-└───────────────────────────────────────────────────────────┘
-```
-
-### 11.2 JWT設計
-
-```json
-{
-  "sub": "user_001",
-  "role": "nursery_admin",
-  "nursery_id": "ayukko_001",
-  "child_ids": [],
-  "display_name": "木村さん",
-  "iat": 1711000000,
-  "exp": 1711086400
-}
-```
-
-保護者の場合:
-```json
-{
-  "sub": "user_parent_001",
-  "role": "parent",
-  "nursery_id": "ayukko_001",
-  "child_ids": ["child_mondal_aum", "child_tanaka_yui"],
-  "display_name": "田中",
-  "line_user_id": "U1234567890abcdef",
-  "iat": 1711000000,
-  "exp": 1711086400
-}
-```
-
-### 11.3 APIアクセス制御マトリックス
-
-| API | super_admin | nursery_admin | staff | parent |
-|-----|-------------|---------------|-------|--------|
-| GET /api/nurseries | ✅ 全施設 | ✅ 自施設のみ | ❌ | ❌ |
-| POST /api/nurseries | ✅ | ❌ | ❌ | ❌ |
-| GET /api/children | ✅ 全施設 | ✅ 自施設 | ✅ 自施設 | ✅ 自分の子のみ |
-| POST /api/schedules | ✅ | ✅ | ✅ | ✅ 自分の子のみ |
-| GET /api/schedules/dashboard | ✅ | ✅ | ✅ | ❌ |
-| POST /api/jobs | ✅ | ✅ | ❌ | ❌ |
-| GET /api/statement/:childId | ✅ | ✅ | ❌ | ✅ 自分の子のみ |
-| POST /api/line/link-codes | ✅ | ✅ | ❌ | ❌ |
-
----
-
-## 12. LINE連携のマルチ施設拡張
-
-### 12.1 LINE公式アカウント戦略
-
-| 戦略 | 説明 | メリット | デメリット |
-|------|------|---------|----------|
-| **A: 1アカウント/施設** | 施設ごとに公式アカウント | 明確な分離 | 30アカウント管理 |
-| **B: 1統合アカウント** | 全施設で1つのアカウント | 管理楽 | 施設選択フロー必要 |
-| **C: ハイブリッド** | グループ単位でアカウント | バランス | 中途半端 |
-
-**推奨: 方式A (1アカウント/施設)**
-- 保護者にとって自然（自分の保育所のアカウント）
-- 施設名・アイコンをカスタマイズ可能
-- Webhook URL は共通（nursery_id パラメータで振り分け）
-
-### 12.2 Webhook共通化設計
-
-```
-全施設のLINE Webhook URL:
-  https://{domain}/api/line/webhook?nursery={short_code}
-
-例:
-  あゆっこ:  /api/line/webhook?nursery=AYK
-  施設B:    /api/line/webhook?nursery=FAC002
-  施設C:    /api/line/webhook?nursery=FAC003
-```
-
-```typescript
-// LINE Webhook の施設振り分け
-app.post('/api/line/webhook', async (c) => {
-  const nurseryCode = c.req.query('nursery');
-  
-  // 施設コードからnursery_id + LINE設定を取得
-  const nursery = await getNurseryByCode(c.env.DB, nurseryCode);
-  if (!nursery) return c.text('Unknown nursery', 400);
-  
-  // 施設ごとのChannel Secretで署名検証
-  const lineConfig = await getNurseryLineSetting(c.env.DB, nursery.id);
-  const body = await c.req.text();
-  const signature = c.req.header('X-Line-Signature');
-  
-  const isValid = await verifySignature(body, signature, lineConfig.channel_secret);
-  if (!isValid) return c.text('Invalid signature', 401);
-  
-  // 以降の処理はnursery_idスコープで実行
-  const events = JSON.parse(body).events;
-  for (const event of events) {
-    await handleLineEvent(c.env, nursery.id, lineConfig, event);
-  }
-  
-  return c.text('OK');
-});
-```
-
-### 12.3 LINE Secrets管理
-
-```
-方式: nursery_settings テーブルに暗号化して保存
-
-nursery_settings:
-  nursery_id: 'ayukko_001'
-  setting_key: 'line_config'
-  setting_value: {
-    "channel_id": "1234567890",
-    "channel_secret": "encrypted:xxxxxxx",
-    "channel_access_token": "encrypted:xxxxxxx",
-    "webhook_path": "/api/line/webhook?nursery=AYK"
-  }
-```
-
-**暗号化方式**: Cloudflare Workers環境変数で共通暗号化キーを保持し、
-DB内のトークンは AES-256-GCM で暗号化。
-
-### 12.4 連携コードの施設スコープ
-
-```
-現行: AYK-XXXX (あゆっこ固定)
-拡張: {施設コード}-XXXX
-
-例:
-  あゆっこ:  AYK-3F7K
-  施設B:    FAC-8H2M
-  施設C:    SAK-9P4N
-
-link_codes テーブルの nursery_id で施設を自動判定
-```
-
----
-
-## 13. 施設オンボーディングフロー
-
-### 13.1 新施設登録手順
+### 15.1 新規施設追加手順
 
 ```
 Step 1: スーパー管理者が施設を登録
-  POST /api/nurseries
-  {
-    "name": "○○保育所",
-    "short_code": "FAC002",
-    "region": "滋賀県",
-    "features_json": {
-      "schedule_input": true,
-      "staff_dashboard": true,
-      "university_report": true,
-      "billing_excel": false,
-      "parent_statement": false
-    }
-  }
+  → /admin/nurseries → 「施設追加」
+  → 必要情報: 施設名, slug, tier, 連絡先, 開園時間, 食事種類等
+  → nurseries テーブルに INSERT
 
-Step 2: 施設管理者アカウント作成
-  POST /api/users
-  {
-    "email": "admin@facility002.example.com",
-    "role": "nursery_admin",
-    "nursery_id": "facility_002",
-    "display_name": "○○保育所 管理者"
-  }
+Step 2: オーナーアカウント作成
+  → 施設の管理者(オーナー)のメールアドレスを登録
+  → 初回ログインリンクを送信
+  → staff_accounts に INSERT (role='owner')
 
-Step 3: 基本設定投入
-  - 営業時間設定
-  - 料金ルール (pricing_rules) 登録
-  - LINE公式アカウント設定 (任意)
-  - テンプレート登録 (③④が必要な場合)
+Step 3: オーナーが初期設定
+  → 園児マスタ登録 (CSV一括 or 個別入力)
+  → 保護者アカウント作成 + 連携コード発行
+  → スタッフアカウント追加 (必要に応じて)
 
-Step 4: 園児データ登録
-  - CSV一括インポート or 個別登録
-  - 保護者連携コード自動発行
+Step 4: 保護者に案内
+  → 連携コード + ポータルURL を配布 (紙 or メール)
+  → QRコードでポータルに直接アクセス可能
+  → 初回ログイン → 以降はCookieで自動認証
 
-Step 5: 保護者への案内配布
-  - LINE QRコード
-  - 連携コード
-  - Web Portal URL
+Step 5: 運用開始
+  → 保護者が翌月の予定を入力
+  → スタッフがダッシュボードで確認
+  → 月次帳票生成 (Tier 2以上)
 ```
 
-### 13.2 オンボーディング所要時間見積
-
-| 作業 | 所要時間 | 備考 |
-|------|---------|------|
-| 施設登録 | 5分 | Super Admin |
-| 管理者アカウント | 5分 | Super Admin |
-| 料金ルール設定 | 30分 | 施設管理者 + 料金表 |
-| 園児データCSVインポート | 15分 | 施設管理者 |
-| LINE公式アカウント開設 | 1日 | LINE審査待ち |
-| 保護者案内配布 | 1日 | 施設管理者 |
-| **合計** | **約2-3日** | |
-
----
-
-## 14. コスト・スケーラビリティ分析
-
-### 14.1 30施設規模でのコスト見積
-
-#### LINE
-
-| 項目 | 1施設 | 30施設 | 備考 |
-|------|-------|--------|------|
-| アカウント費用 | 0円 or 5,000円 | 0円～150,000円 | Reply Messageメインならフリープラン可 |
-| メッセージ通数 | ~510通/月 | ~15,300通/月 | 30園 x 510通 |
-
-**Reply Messageはカウント対象外**のため、大半はフリープランで運用可能。
-Push Message（リマインド）のみ課金対象:
-- 1施設あたりリマインド: 30名 x 2回 = 60通/月
-- 30施設: 1,800通/月
-- → フリープラン (200通) 超のためライトプラン推奨施設も出る可能性
-
-**推奨**: 各施設のメッセージ量を計測し、フリー/ライトを施設ごとに判断
-
-#### OpenAI API
-
-| 項目 | 1施設 | 30施設 |
-|------|-------|--------|
-| 園児数 | ~30名 | ~900名 |
-| 月間トークン | ~660K | ~19.8M |
-| コスト | ~$0.13 | ~$3.90 (~600円) |
-
-#### Cloudflare
-
-| 項目 | Free Plan上限 | 30施設想定 | 判定 |
-|------|-------------|-----------|------|
-| Workers requests | 100,000/日 | ~3,000/日 | ✅ 余裕 |
-| D1 reads | 5,000,000/日 | ~15,000/日 | ✅ 余裕 |
-| D1 writes | 100,000/日 | ~3,000/日 | ✅ 余裕 |
-| D1 storage | 5GB | ~300MB | ✅ 余裕 |
-| R2 storage | 10GB free | ~1GB | ✅ 余裕 |
-
-#### 月額合計コスト見積
-
-| 項目 | 最小構成 | 最大構成 |
-|------|---------|---------|
-| LINE (30施設) | 0円 (全施設フリー) | 150,000円 (全施設ライト) |
-| OpenAI | 600円 | 600円 |
-| Cloudflare | 0円 (Free) | 0円 (Free) |
-| **合計** | **600円/月** | **150,600円/月** |
-
-**現実的見積**: ~5施設がライトプラン = 25,600円/月
-
-### 14.2 D1 データ量見積
+### 15.2 QRコード設計
 
 ```
-30施設 x 30園児 = 900園児
+各施設ごとのQRコード:
+  URL: https://hoikuen.pages.dev/p/{slug}/
+  用途: 保護者への配布物に印刷
 
-schedule_plans: 900 x 22日 x 12ヶ月 = 237,600行/年
-attendance_records: 同程度
-usage_facts: 同程度
-charge_lines: 900 x 12 x 10種 = 108,000行/年
-line_conversations: 900 x 12 = 10,800行/年
-line_conversation_logs: 10,800 x 10 = 108,000行/年
+各児童ごとの連携QRコード:
+  URL: https://hoikuen.pages.dev/p/{slug}/link?code={AYK-XXXX}
+  用途: 連携コード入力を省略してワンタップ連携
+```
 
-年間合計: ~700,000行 (数十MB程度)
-→ D1 Free Plan (5GB) で十分
+### 15.3 園児CSV一括登録
+
+```csv
+name,name_kana,birth_date,enrollment_type,child_order,is_allergy,parent_name,parent_email
+田中太郎,タナカタロウ,2023-06-15,月極,1,0,田中花子,hanako@example.com
+田中次郎,タナカジロウ,2025-01-20,月極,2,0,田中花子,hanako@example.com
+山田桜,ヤマダサクラ,2024-03-01,一時,1,1,山田由美,yumi@example.com
 ```
 
 ---
 
-## 15. 段階的実装ロードマップ
+## 16. コスト見積 (30施設規模)
 
-### 15.1 フェーズ概要
+### 16.1 Cloudflare Workers / D1
 
-```
-Phase 0: あゆっこ完成 (現在進行中)
-  ├── 既存のv6.1機能を安定化
-  ├── REQUIREMENTS_CHECK.md の最優先修正
-  └── LINE連携v2.0設計のレビュー完了
+| 項目 | Free Plan上限 | 30施設想定 | 有料プラン |
+|------|-------------|-----------|-----------|
+| Workers requests | 100,000/日 | ~3,000/日 | 不要 |
+| D1 reads | 5M/日 | ~15,000/日 | 不要 |
+| D1 writes | 100K/日 | ~3,000/日 | 不要 |
+| D1 storage | 5GB | ~500MB | 不要 |
+| R2 storage | 10GB/月 | ~2GB | 不要 |
+| R2 operations | 10M reads/月 | ~10K/月 | 不要 |
 
-Phase 1: マルチ施設基盤 (2-3週間)
-  ├── 認証・ロールモデル導入
-  ├── テナントスコープミドルウェア
-  ├── nurseries テーブル拡張
-  └── 施設管理UI
+**結論**: 30施設規模ではFree Planで十分。
 
-Phase 2: 保護者入力 — 全30施設 (4-6週間)
-  ├── LINE連携実装 (v2.0 → v3.0)
-  ├── 保護者Webポータル (サブチャネル)
-  └── 施設ごとの予定入力設定
+### 16.2 LINE (Phase 2、希望施設のみ)
 
-Phase 3: スタッフダッシュボード — 全30施設 (2週間)
-  ├── 施設別フィルタリング
-  ├── 印刷最適化
-  └── 提出状況管理UI
+| 方式 | 月額 | 備考 |
+|------|------|------|
+| 方式A: 共有1アカウント | ¥5,000 | 30施設×30保護者×15通 ≈ 13,500通 → ライトプラン |
+| 方式B: 施設別アカウント | ¥0〜¥5,000 × 施設数 | フリープラン200通/施設で足りる場合あり |
 
-Phase 4: 帳票機能 — 対象施設のみ (3-4週間)
-  ├── ③ 大学PDF (標準テンプレ)
-  ├── ④ 経理Excel (2施設)
-  └── ⑤ 保護者明細PDF (あゆっこ)
+### 16.3 OpenAI (LINE Phase 2)
 
-Phase 5: 展開・運用 (ongoing)
-  ├── 施設オンボーディング
-  ├── 運用監視・サポート
-  └── フィードバック→改善
-```
+| 項目 | コスト |
+|------|--------|
+| 30施設 × 30保護者 × 1会話/月 | ~$4/月 (~¥600) |
 
-### 15.2 Phase別の詳細見積
+### 16.4 月額合計見積
 
-| Phase | 期間 | 成果物 | リスク |
-|-------|------|--------|--------|
-| Phase 0 | 進行中 | あゆっこ安定稼働 | seed.sql不整合 |
-| Phase 1 | 2-3w | 認証+マルチテナント基盤 | JWT設計の複雑さ |
-| Phase 2 | 4-6w | LINE+Web保護者入力 | LINE API審査待ち |
-| Phase 3 | 2w | 全施設ダッシュボード | 印刷レイアウト調整 |
-| Phase 4 | 3-4w | 帳票 (PDF/Excel) | テンプレ互換性 |
-| Phase 5 | ongoing | 30施設展開 | オンボーディング負荷 |
+| 項目 | Phase 1 (Web のみ) | Phase 2 (+ LINE) |
+|------|-------------------|------------------|
+| Cloudflare | ¥0 | ¥0 |
+| LINE | ¥0 | ¥5,000 |
+| OpenAI | ¥0 | ¥600 |
+| メール送信 (マジックリンク) | ¥0 (Resend free 100通/日) | ¥0 |
+| **合計** | **¥0/月** | **~¥5,600/月** |
 
-### 15.3 優先度マトリックス
+---
+
+## 17. 実装ロードマップ
+
+### 17.1 Phase 分割
 
 ```
-影響度 ＼ 即効性     高（すぐ使える）     中              低（準備が必要）
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Phase 0: 基盤整備 (1-2週)
+  ├── DB マイグレーション (0003, 0004, 0005, 0006)
+  ├── マルチテナントミドルウェア
+  ├── 認証基盤 (セッション, マジックリンク)
+  └── 既存あゆっこ機能の nursery_id 対応
 
-高（全30施設）      Phase 2: LINE入力     Phase 3:         
-                    Phase 1: 認証基盤     ダッシュボード     
+Phase 1A: 保護者 Web ポータル MVP (2-3週) ← ★最優先
+  ├── 保護者ログイン (マジックリンク)
+  ├── 予定入力カレンダー (パターン入力)
+  ├── 確認画面 + 提出
+  ├── 締切管理 + ロック
+  └── 1施設 (あゆっこ) でパイロット
 
-中（大半の施設）                          Phase 4-③:
-                                          大学PDF
+Phase 1B: スタッフ管理画面 マルチテナント化 (1-2週)
+  ├── 施設別ダッシュボード
+  ├── 提出状態管理
+  ├── 印刷用レイアウト
+  └── 園児・保護者管理
 
-低（少数施設）                            Phase 4-④:      Phase 4-⑤:
-                                          経理Excel       保護者明細
+Phase 2A: 標準帳票 (2-3週)
+  ├── 大学提出用 PDF (③)
+  ├── 日報 PDF
+  ├── テンプレート管理
+  └── Tier 2 施設に展開
+
+Phase 2B: あゆっこ固有機能 (1-2週)
+  ├── 経理用 Excel (④)
+  ├── 保護者利用明細 PDF (⑤)
+  └── 既存 Python Generator 統合
+
+Phase 3: LINE連携 (4-6週)
+  ├── LINE_SCHEDULE_COLLECTION_PLAN.md v3.0
+  ├── Webhook + アカウント連携
+  ├── AI会話エンジン
+  └── 希望施設に展開
+
+Phase 4: 横展開 (随時)
+  ├── 30施設のオンボーディング
+  ├── 施設固有カスタマイズ
+  └── 運用安定化
+```
+
+### 17.2 依存関係グラフ
+
+```
+Phase 0 (基盤)
+  ├─────► Phase 1A (保護者ポータル) ─┬─► Phase 2A (標準帳票)
+  │                                   │
+  ├─────► Phase 1B (スタッフ管理)  ───┤
+  │                                   │
+  │                                   ├─► Phase 2B (あゆっこ固有)
+  │                                   │
+  └───────────────────────────────────└─► Phase 3 (LINE連携)
+                                              │
+                                              ▼
+                                        Phase 4 (横展開)
+```
+
+### 17.3 MVP 定義
+
+**Phase 1A MVP (最小限の保護者入力):**
+- ✅ 保護者がスマホでログイン（マジックリンク）
+- ✅ 1児童、1ヶ月分の予定入力（カレンダーUI）
+- ✅ パターン一括入力（曜日 + デフォルト時間）
+- ✅ 個別日の修正（休み、時間変更）
+- ✅ 確認画面 → 提出 → schedule_plans に保存
+- ✅ 既存ダッシュボードに保護者入力分が即反映
+- ❌ 締切ロック (Phase 1A 後半)
+- ❌ 複数児童同時入力 (Phase 1A 後半)
+- ❌ 緊急キャンセル (Phase 1A 後半)
+
+---
+
+## 18. 既存あゆっこシステムからの移行計画
+
+### 18.1 基本方針
+
+```
+1. 既存のテーブル・データは一切削除しない
+2. 新テーブルの追加と既存テーブルのカラム追加のみ
+3. 既存のAPI (/api/schedules, /api/children 等) は当面維持
+4. 新API (/api/{slug}/...) を並行追加
+5. あゆっこは nursery_id = 'ayukko_001', slug = 'ayukko' で参照
+6. 移行完了後、旧APIは deprecated として段階的に廃止
+```
+
+### 18.2 データ移行
+
+```sql
+-- 既存データの nursery_id は全て 'ayukko_001' なので変更不要
+
+-- nurseries テーブルに slug を追加するだけ
+UPDATE nurseries SET slug = 'ayukko', tier = 'premium' WHERE id = 'ayukko_001';
+
+-- 既存園児データの nursery_id は既に 'ayukko_001'
+-- → 追加作業なし
+
+-- 既存 schedule_plans には submitted_by, submitted_at が NULL
+-- → 新規入力分から適用
+```
+
+### 18.3 URL マッピング
+
+```
+既存URL (当面維持):
+  / (メインUI)
+  /api/schedules
+  /api/children
+
+新URL (段階的に追加):
+  /p/ayukko/          (保護者ポータル)
+  /s/ayukko/          (スタッフ管理画面)
+  /api/ayukko/...     (テナントAPI)
+  /admin/             (全施設管理)
 ```
 
 ---
 
-## 16. リスクと制約
+## 19. リスクと未決事項
 
-### 16.1 技術リスク
+### 19.1 リスク
 
-| リスク | 影響度 | 対策 |
-|--------|--------|------|
-| D1の同時書き込み制限 | 中 | 30施設でも余裕。万一の場合はキューイング |
-| Cloudflare Workersの10ms CPU制限 | 中 | 帳票生成は重い → Python Generatorを継続利用 |
-| LINE API審査に時間がかかる | 高 | 早期申請。Webポータルを代替手段として用意 |
-| 30施設分のLINE Secretsの管理 | 中 | DB暗号化 + アクセスログ |
+| # | リスク | 影響度 | 緩和策 |
+|---|--------|--------|--------|
+| 1 | D1の行数制限 (30施設 × 66園児 × 31日 ≈ 60K行/月) | 低 | D1は5GB上限、年間でも~1M行程度 |
+| 2 | Worker CPU制限 (10ms free) でPDF生成が間に合わない | 中 | Paid plan (30ms) or バッチ分割 |
+| 3 | マジックリンクのメール到達率 | 中 | Resend + SPF/DKIM設定、代替に連携コード+PIN |
+| 4 | 30施設の同時オンボーディング | 中 | 5施設ずつ段階的にオンボーディング |
+| 5 | 施設固有のカスタマイズ要望増加 | 高 | settings_json で吸収、個別対応は有償 |
+| 6 | 保護者のITリテラシー格差 | 中 | シンプルUI + 紙の説明書 + 電話サポート |
 
-### 16.2 運用リスク
+### 19.2 未決事項
 
-| リスク | 影響度 | 対策 |
-|--------|--------|------|
-| 30施設のオンボーディングが追いつかない | 高 | バッチオンボーディングツール作成 |
-| 施設ごとの料金体系バリエーション | 中 | pricing_rules のJSON柔軟性で対応 |
-| 保護者のITリテラシー差 | 中 | LINE (直感的) + スタッフ代行入力 |
-| 帳票フォーマットの施設間差異 | 高 | 標準テンプレ + カスタムテンプレ対応 |
+| # | 項目 | 決定者 | 期限 |
+|---|------|--------|------|
+| 1 | 30施設の施設名リストと優先順位 | 木村さん | Phase 0 開始前 |
+| 2 | 各施設の Tier 分類 | 木村さん | Phase 0 開始前 |
+| 3 | 大学提出フォーマットのサンプル入手 | 木村さん | Phase 2A 開始前 |
+| 4 | マジックリンク用のメール送信ドメイン | 開発チーム | Phase 1A 開始前 |
+| 5 | LINE公式アカウントの方針 (共有 or 施設別) | 木村さん | Phase 3 開始前 |
+| 6 | breakfast_flag の要否最終判断 | 木村さん | Phase 0 |
+| 7 | 各施設の料金体系が共通かバラバラか | 木村さん | Phase 2A 開始前 |
+| 8 | seed.sql の time_boundaries 不整合修正 | 開発チーム | Phase 0 |
+| 9 | カスタムドメインの要否 (例: portal.kimura-hoikuen.jp) | 木村さん | Phase 4 |
+| 10 | 保護者への案内方法 (紙配布 or メール or 両方) | 木村さん | Phase 1A パイロット前 |
 
-### 16.3 Phase 0での未解決課題
+---
 
-**LINE実装前に修正必須**:
-1. seed.sql の時間帯不整合 (extension_start: 18:00→20:00, night_start: 20:00→21:00)
-2. 病児保育の永続化 (manualEdits → DB)
-3. breakfast_flag の追加判断
-4. PDF空欄問題の実機確認
+## 20. 付録
+
+### 20.1 既存システムとの変更サマリー
+
+| 変更対象 | v6.1 (現在) | マルチテナント版 | 影響 |
+|----------|------------|----------------|------|
+| nurseries テーブル | name, settings_json | + slug, tier, is_active, contact_json | 低 |
+| children テーブル | nursery_id あり | 変更なし | なし |
+| schedule_plans テーブル | source_file | + submitted_by, submitted_at | 低 |
+| API ルーティング | /api/xxx | /api/:slug/xxx (並行) | 低 |
+| 認証 | なし | セッション + ロール | 新規 |
+| UI | 1施設専用 | 施設切替 + 保護者ポータル | 新規 |
+| 帳票生成 | Python Generator | + jsPDF 標準テンプレート | 追加 |
+
+### 20.2 技術スタック (全体像)
+
+```
+Frontend:
+  ├── 保護者ポータル:  HTML + TailwindCSS + Vanilla JS (PWA)
+  ├── スタッフ管理画面: HTML + TailwindCSS + Vanilla JS (既存拡張)
+  └── 全施設管理画面:  HTML + TailwindCSS + Vanilla JS
+
+Backend:
+  ├── Hono (Cloudflare Workers)
+  ├── D1 (SQLite) — マルチテナント共有DB
+  ├── R2 (Object Storage) — テンプレ・生成物
+  ├── Cloudflare Secrets — API keys, tokens
+  └── Python Generator (Tier 3 施設のみ)
+
+外部サービス:
+  ├── LINE Messaging API (Phase 2)
+  ├── OpenAI API (Phase 2)
+  ├── Resend (マジックリンクメール送信)
+  └── @holiday-jp/holiday_jp (祝日判定)
+```
+
+### 20.3 用語集
+
+| 用語 | 説明 |
+|------|------|
+| テナント | 1つの保育施設 = nurseries テーブルの1行 |
+| slug | 施設の短縮ID (URL用)。例: ayukko, sakura |
+| Tier | 施設の機能レベル (basic/standard/premium) |
+| 保護者ポータル | 保護者がスマホでアクセスする予定入力画面 |
+| マジックリンク | パスワード不要のメール認証方式 |
+| 連携コード | 保護者⇔児童を紐付ける使い捨てコード (AYK-XXXX) |
+| 提出状態 | draft → submitted → confirmed → locked の遷移 |
+| schedule_submissions | 月次の提出状態を管理するテーブル |
 
 ---
 
@@ -1231,9 +1773,9 @@ Phase 5: 展開・運用 (ongoing)
 
 | バージョン | 日付 | 内容 |
 |-----------|------|------|
-| 1.0 | 2026-03-04 | 初版作成。木村さんヒアリングの5要件をマルチ施設展開として設計 |
+| 1.0 | 2026-03-04 | 初版作成。5要件の整理、施設ティア分類、マルチテナントDB設計、保護者Webポータル設計、認証アーキテクチャ、APIリファクタリング計画、コスト見積、ロードマップ |
 
 ---
 
 *この文書は設計計画のみです。実装コードは含まれていません。*
-*LINE_SCHEDULE_COLLECTION_PLAN.md v3.0 と併せて参照してください。*
+*実装着手前に、セクション19.2の未決事項の解消が必要です。*

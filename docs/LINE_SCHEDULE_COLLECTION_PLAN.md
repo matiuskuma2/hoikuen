@@ -1,11 +1,11 @@
 # LINE Messaging API 月次利用予定収集システム 設計計画書
 
 > **Version**: 3.0 (2026-03-04)
-> **Status**: Design Only (実装前)
-> **Author**: Ayukko Nursery Automation Team
-> **Parent System**: 保育園業務自動化プラットフォーム (旧: あゆっこ業務自動化システム v6.1)
-> **前版からの変更**: v2.0 → v3.0 マルチ施設対応、保護者Webポータル設計、施設別LINE設定、認証設計追加
-> **関連ドキュメント**: [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md)
+> **Status**: Design Only (実装前 — Phase 2)
+> **Author**: Ayukko Development Team
+> **Parent System**: 保育施設業務自動化システム (マルチテナント版)
+> **前版からの変更**: v2.0 → v3.0 マルチテナント対応、Web ポータルとの位置付け整理、Phase 2 化
+> **関連ドキュメント**: [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md) — 複数施設対応 総合設計書
 
 ---
 
@@ -44,8 +44,9 @@
 
 ### 1.2 システムのスコープ (v3.0)
 
-本設計は**約30の委託保育施設**への展開を前提とする。LINE予定収集はコア共通機能（全施設適用）。
-詳細なマルチ施設アーキテクチャは [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md) を参照。
+本設計は**約30の委託保育施設**への展開を前提とする。LINE予定収集は**Phase 2 追加チャネル**（希望施設のみ適用）。
+全施設共通の保護者入力は Phase 1 の Web ポータル (MULTI_FACILITY_DESIGN.md セクション6) で実現する。
+LINE は「さらに便利にしたい施設」向けのオプション。
 
 ### 1.3 現行フロー (AS-IS)
 ```
@@ -1877,14 +1878,14 @@ https://{domain}/parent/profile        -- プロフィール確認
   LINE友だち追加 → LIFFアプリ起動 → LINE userId で自動認証
   → 追加の認証不要
 
-方式B: 連携コード + パスワード
-  初回: 施設から配布された連携コード + パスワード設定
-  2回目以降: メアド + パスワード
-  → LINE非利用者向け
-
-方式C: マジックリンク (Email/SMS)
-  メアド or 電話番号入力 → 一時リンク送信 → クリックでログイン
+方式B: マジックリンク (Email) ← Web ポータルと共通
+  メアド入力 → 一時リンク送信 → クリックでログイン
   → パスワード不要で安全
+  → MULTI_FACILITY_DESIGN.md セクション11 参照
+
+方式C: 連携コード + PIN
+  初回: 施設から配布された連携コード + 4桁PIN
+  → メール未登録の保護者向け
 ```
 
 ### 22.4 予定入力UI (モバイル最適化)
@@ -2152,5 +2153,6 @@ ALTER TABLE line_conversations ADD COLUMN nursery_id TEXT REFERENCES nurseries(i
 ---
 
 *この文書は設計計画のみです。実装コードは含まれていません。*
-*実装着手前に、LINE公式アカウントの開設とOpenAI APIキーの準備が必要です。*
-*マルチ施設対応の詳細は [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md) を参照。*
+*LINE連携は Phase 2 です。Phase 1 (Web ポータル) の完成が前提条件です。*
+*実装着手前に、LINE公式アカウントの開設と OpenAI APIキーの準備が必要です。*
+*マルチテナントアーキテクチャ、保護者 Web ポータル、認証設計の詳細は [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md) を参照。*
