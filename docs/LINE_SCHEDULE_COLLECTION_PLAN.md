@@ -1,9 +1,10 @@
 # LINE Messaging API 月次利用予定収集システム 設計計画書
 
-> **Version**: 1.0 (2026-03-04)
+> **Version**: 2.0 (2026-03-04)
 > **Status**: Design Only (実装前)
 > **Author**: Ayukko Nursery Automation Team
 > **Parent System**: 滋賀医科大学学内保育所 あゆっこ 業務自動化システム v6.1
+> **前版からの変更**: v1.0 → v2.0 設計差分セクション追加、紙予定表対比、breakfast_flag対応、運用フロー精緻化
 
 ---
 
@@ -18,13 +19,17 @@
 7. [変更ルール・ロック仕様](#7-変更ルールロック仕様)
 8. [データベーススキーマ拡張](#8-データベーススキーマ拡張)
 9. [API設計](#9-api設計)
-10. [セキュリティ・プライバシー](#10-セキュリティプライバシー)
-11. [料金・コスト見積](#11-料金コスト見積)
-12. [依存関係・技術スタック](#12-依存関係技術スタック)
-13. [マイグレーション計画](#13-マイグレーション計画)
-14. [実装ロードマップ](#14-実装ロードマップ)
-15. [テスト計画](#15-テスト計画)
-16. [運用マニュアル](#16-運用マニュアル)
+10. [運用フロー: 月次リマインドと提出管理](#10-運用フロー-月次リマインドと提出管理)
+11. [紙予定表 vs LINE入力 対比表](#11-紙予定表-vs-line入力-対比表)
+12. [既存システムとの統合](#12-既存システムとの統合)
+13. [セキュリティ・プライバシー](#13-セキュリティプライバシー)
+14. [料金・コスト見積](#14-料金コスト見積)
+15. [依存関係・技術スタック](#15-依存関係技術スタック)
+16. [マイグレーション計画](#16-マイグレーション計画)
+17. [実装ロードマップ](#17-実装ロードマップ)
+18. [テスト計画](#18-テスト計画)
+19. [運用マニュアル](#19-運用マニュアル)
+20. [v1.0 → v2.0 設計差分](#20-v10--v20-設計差分)
 
 ---
 
@@ -43,6 +48,7 @@
 保護者 → LINEで友だち追加 → アカウント連携(1回)
 → 毎月リマインド受信 → LINEでAIとやり取り → 自動でDB登録
 → 変更もLINEで → 締切管理・ロック自動適用
+→ 既存の帳票生成システムがそのまま利用
 ```
 
 ### 1.4 主要な設計原則
@@ -51,7 +57,18 @@
 3. **予定以外は断る**: AIのスコープを予定収集に限定（プロンプトで制御）
 4. **複数児童対応**: 1人のLINEユーザーが複数の児童分を管理できる
 5. **変更可能 + ロック**: 前月末日まで変更可、当月はロック（緊急キャンセルは例外）
-6. **既存DB統合**: 現在の `schedule_plans` テーブルに直接書き込み
+6. **既存DB統合**: 現在の `schedule_plans` テーブルに直接書き込み（`source_file = 'LINE'`）
+7. **紙予定表と同等の情報**: 紙で収集していた全項目をLINEで収集する
+
+### 1.5 v2.0 での主な追加・変更
+| 項目 | v1.0 | v2.0 |
+|------|------|------|
+| 保護者の入力手段 | LINE（設計のみ） | LINE（設計詳細化、紙対比追加） |
+| 紙予定表との対比 | なし | セクション11で完全対比 |
+| breakfast_flag | 未考慮 | 設計に組み込み（DB拡張候補） |
+| 運用フロー | 概要のみ | 月次サイクル完全定義 |
+| 既存システム統合 | 概要のみ | schedule_plans統合詳細 |
+| 会話状態マシン | 8状態 | 10状態（AUTH_LINK, MODIFY, CANCEL_REQUEST追加） |
 
 ---
 
@@ -82,11 +99,32 @@ schedule_plans テーブル
 | source_file | TEXT | 入力元 |
 | UNIQUE | | (child_id, year, month, day) |
 
-### 2.3 既存の children テーブルの主要フィールド
+**注意: `breakfast_flag` カラムが存在しない** (→ セクション8.2で対応方針記載)
+
+### 2.3 紙の利用予定表で収集している項目
+REQUIREMENTS.md セクション 2.1.A より:
+```
+紙の利用予定表 (Excel) — 1園児1ファイル
+  シート "原本"
+  左半分（日1-15）/ 右半分（日16-31）:
+    日付, 登所時間 (HH:MM), 降所時間 (HH:MM),
+    昼食フラグ (〇), おやつフラグ (〇), 夕食フラグ (〇)
+```
+紙予定表では食事3区分（昼食・おやつ・夕食）。おやつは am/pm を区別していない。
+
+**保育時間 (提出用) シートでは食事4列:**
+```
+col+4 (M) = 朝食 (〇)       ← ★紙予定表にない。提出用シートにのみ存在
+col+5 (N) = 昼食 (〇)
+col+6 (O) = おやつ (〇)     ← am/pm統合
+col+7 (P) = 夕食 (〇)
+```
+
+### 2.4 既存の children テーブルの主要フィールド
 - `id`, `nursery_id`, `lukumi_id`, `name`, `name_kana`, `birth_date`
 - `age_class`, `enrollment_type` (月極/一時), `child_order`, `is_allergy`
 
-### 2.4 解決すべき課題
+### 2.5 解決すべき課題
 | # | 課題 | 影響 | 設計での対応 |
 |---|------|------|-------------|
 | 1 | 紙での予定提出は保護者・スタッフ双方に負荷 | 月次作業が数時間 | LINE自動収集 |
@@ -94,6 +132,7 @@ schedule_plans テーブル
 | 3 | 変更連絡が口頭ベース | 追跡不可 | LINE会話ログで追跡可能 |
 | 4 | 締切管理が属人的 | 遅延・漏れ | 自動リマインド + ロック |
 | 5 | 複数児童の場合、紙が複数枚 | 管理煩雑 | 1会話で全児童分収集 |
+| 6 | 朝食(150円)がDBスキーマに不在 | 朝食利用児の課金漏れ | breakfast_flag追加を計画 |
 
 ---
 
@@ -158,10 +197,35 @@ src/
    c. postback   → ボタン操作の処理
 5. AI会話エンジン:
    a. 会話状態をDBから取得
-   b. LLM (OpenAI GPT-4o) で次の質問/応答生成
-   c. 予定データ抽出 → schedule_plans へ UPSERT
-   d. 会話状態をDBに保存
+   b. LLM (OpenAI GPT-4o-mini) でユーザー入力を構造化データに変換
+   c. ビジネスルール（ロック、食事推定等）はシステム側で判定
+   d. 予定データ抽出 → schedule_plans へ UPSERT
+   e. 会話状態をDBに保存
 6. LINE Reply API で応答送信
+```
+
+### 3.4 LLMとシステムの責務分担 (v2.0 明確化)
+```
+┌─────────────────────────────────────────────────────────┐
+│ LLMの責務 (AIがやること)                                  │
+├─────────────────────────────────────────────────────────┤
+│ ✅ 自由テキスト → 構造化データ (日付, 時刻, 食事) 変換    │
+│ ✅ 不足項目の特定 → フォローアップ質問テキスト生成         │
+│ ✅ 予定サマリーの自然言語生成                              │
+│ ✅ スコープ外質問の判定 → 定型拒否メッセージ              │
+│ ✅ 曖昧表現の解釈 (「来週水曜」→ 具体日付)               │
+├─────────────────────────────────────────────────────────┤
+│ システムの責務 (コードでやること)                          │
+├─────────────────────────────────────────────────────────┤
+│ ✅ 会話状態管理 (ステートマシン遷移)                      │
+│ ✅ 変更締切・ロック判定                                   │
+│ ✅ 食事フラグ自動推定 (時間帯→食事)                      │
+│ ✅ 祝日判定                                              │
+│ ✅ 全営業日カバー判定                                    │
+│ ✅ schedule_plans テーブルへのCRUD                       │
+│ ✅ LINE API呼び出し (Reply/Push)                         │
+│ ✅ 署名検証、認証、Rate Limiting                         │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -176,7 +240,7 @@ src/
 | アカウント種別 | LINE公式アカウント (Verified推奨) |
 | プラン | フリープラン (月200通まで無料) or ライトプラン |
 | Messaging API | 有効化 |
-| Webhook URL | `https://<cloudflare-project>.pages.dev/api/line/webhook` |
+| Webhook URL | `https://ayukko-nursery.pages.dev/api/line/webhook` |
 | 応答モード | Webhook |
 | 自動応答 | 無効 (Bot側で制御) |
 | あいさつメッセージ | カスタム設定 |
@@ -232,40 +296,24 @@ src/
 | 文字種 | 数字 + 大文字英字 (紛らわしい0/O/I/1は除外) |
 | 衝突回避 | DB UNIQUE制約 + 再生成ロジック |
 
-### 4.4 リマインド配信フロー
-
-```
-┌────────────────────────────────────────────┐
-│ Cron Trigger: 毎月15日 10:00 JST          │
-│ (Cloudflare Workers Scheduled Events)      │
-├────────────────────────────────────────────┤
-│ 1. line_accounts から連携済みユーザー取得   │
-│ 2. 翌月の schedule_plans をチェック         │
-│    └── 未提出 → リマインド送信             │
-│    └── 提出済 → スキップ                   │
-│ 3. Push Message 送信:                       │
-│    "来月（4月）の利用予定の提出時期です。    │
-│     「予定入力」と送信すると、AIが           │
-│     お聞きしながら予定を登録します。"        │
-│                                             │
-│ フォローアップ: 毎月25日 10:00 JST         │
-│ 未提出者のみ再リマインド                    │
-│ "まだ4月の利用予定が届いていません。         │
-│  前月末日までにご提出をお願いします。"       │
-└────────────────────────────────────────────┘
-```
-
 ---
 
 ## 5. AIヒアリングエンジン設計
 
-### 5.1 会話状態マシン
+### 5.1 会話状態マシン (v2.0: 10状態)
 
 ```
                     ┌──────────┐
           start ──► │  IDLE    │ ◄── "最初から" / 前回完了後
                     └────┬─────┘
-                         │ "予定入力" / リマインドへの返信
+                         │ follow イベント (未連携)
+                    ┌────▼─────────────┐
+                    │ AUTH_LINK        │ ◄── 連携コード入力待ち
+                    │ (アカウント連携)  │
+                    └────┬─────────────┘
+                         │ 連携完了 (→ IDLEへ戻る)
+                         │
+          IDLE ──── │ "予定入力" / リマインドへの返信
                     ┌────▼─────────────┐
                     │ SELECT_CHILD     │ ◄── 複数児童 → 児童選択
                     │ (対象児童確認)    │
@@ -282,16 +330,30 @@ src/
                     └────┬─────────────┘
                          │ 全日程OK
                     ┌────▼─────────────┐
-                    │ CONFIRM          │
-                    │ (最終確認)        │
+                    │ CONFIRM          │ ◄── 「はい」→ SAVED
+                    │ (最終確認)        │ ◄── 「修正」→ COLLECTING
                     └────┬─────────────┘
-                    ┌────▼─────┐  ┌────▼─────┐
-                    │ SAVED    │  │ EDITING  │
-                    │ (保存済) │  │ (修正中) │
-                    └──────────┘  └──────────┘
+                    ┌────▼─────┐  
+                    │ SAVED    │ ◄── DB保存完了
+                    │ (保存済) │
+                    └────┬─────┘
+                         │ 「予定変更」(前月末日まで)
+                    ┌────▼─────────────┐
+                    │ MODIFY           │ ◄── 変更ヒアリング
+                    │ (変更受付中)      │
+                    └──────────────────┘
+                         │ 「今日休みます」(当月、緊急)
+                    ┌────▼─────────────┐
+                    │ CANCEL_REQUEST   │ ◄── 緊急キャンセル確認
+                    │ (緊急キャンセル)  │
+                    └──────────────────┘
 ```
 
 ### 5.2 各状態の詳細
+
+#### IDLE → AUTH_LINK (未連携ユーザーのみ)
+**トリガー**: follow イベント、または未連携状態でのメッセージ
+**処理**: 連携コード入力を案内
 
 #### IDLE → SELECT_CHILD
 **トリガー**: 「予定入力」「予定を出したい」「来月の予定」等
@@ -334,7 +396,8 @@ src/
 ├── lunch_flag: 昼食 (0/1)
 ├── am_snack_flag: 午前おやつ (0/1)
 ├── pm_snack_flag: 午後おやつ (0/1)
-└── dinner_flag: 夕食 (0/1)
+├── dinner_flag: 夕食 (0/1)
+└── breakfast_flag: 朝食 (0/1)  ← ★v2.0追加候補 (セクション8.2参照)
 ```
 
 **ヒアリングの戦略:**
@@ -345,10 +408,11 @@ src/
 
 **食事フラグ自動推定ルール:**
 ```
-登園時間 ≤ 10:00 → am_snack_flag = 1
-登園時間 ≤ 11:30 → lunch_flag = 1
-降園時間 ≥ 15:00 → pm_snack_flag = 1
-降園時間 ≥ 18:00 → dinner_flag = 1
+登園時間 < 07:30 (早朝) → breakfast_flag = 1 (朝食の可能性あり → 要確認)
+登園時間 ≤ 10:00        → am_snack_flag = 1
+登園時間 ≤ 11:30        → lunch_flag = 1
+降園時間 ≥ 15:00        → pm_snack_flag = 1
+降園時間 ≥ 18:00        → dinner_flag = 1
 ```
 
 **保護者入力例と解釈:**
@@ -380,6 +444,9 @@ AIの内部解釈:
 [時間帯確認]
 「登園が7:00ですと早朝保育（7:00-7:30）の扱いになりますが、
  よろしいですか？（別途料金: 300円/回）」
+
+[朝食確認] ← ★v2.0追加
+「登園が7:00で、朝食（150円/食）も希望されますか？」
 ```
 
 #### COLLECTING → CONFIRM
@@ -419,6 +486,40 @@ AIの内部解釈:
 4月に入ると変更はロックされます（緊急キャンセルを除く）。
 
 他のお子さまの予定も入力しますか？
+```
+
+#### MODIFY (変更モード、前月末まで)
+```
+保護者: "予定変更"
+Bot: (変更可能期間を確認)
+     "4月の予定を変更しますね。どの日の予定を変更しますか？"
+
+保護者: "4/8を休みにして、4/18を8:00-18:30に変更"
+Bot: "変更内容を確認します：
+     ・4/8(火) → お休み ❌ (削除)
+     ・4/18(金) 8:30-17:00 → 8:00-18:30 (変更)
+       夕食も希望されますか？"
+```
+
+#### CANCEL_REQUEST (緊急キャンセル、当月)
+```
+保護者: "今日休みます。子供が熱出しました。"
+
+Bot: (ロック中を検出)
+     "4月の予定はロックされていますが、
+      緊急キャンセル（病欠等）は承ります。
+      
+      ○○ちゃん 4/8(火) のお休みを登録しますか？
+      ① はい（病欠として登録）
+      ② いいえ"
+
+保護者: "①"
+
+Bot: "✅ ○○ちゃんの4/8(火)を病欠として登録しました。
+      お大事にしてください。🙏"
+
+処理: schedule_plans の該当日を削除 or status='cancelled'
+      + emergency_cancellations テーブルに記録
 ```
 
 ### 5.3 AIプロンプト設計
@@ -524,7 +625,7 @@ AIの内部解釈:
 - Input: ~2000 tokens/turn (システムプロンプト + 会話履歴)
 - Output: ~200 tokens/turn
 - 1会話コスト: ~$0.003 (~0.5円)
-- 30園児 × 1回/月 = ~15円/月
+- 30園児 x 1回/月 = ~15円/月
 
 ---
 
@@ -610,29 +711,7 @@ Bot: "△△ちゃんはアレルギー食対応ですね。
 | 食事変更 | ✅ 可 | ❌ 不可 | ❌ 不可 |
 | 全面差替え | ✅ 可 | ❌ 不可 | ❌ 不可 |
 
-### 7.3 緊急キャンセルフロー
-
-```
-保護者: "今日休みます。子供が熱出しました。"
-
-Bot: (ロック中を検出)
-     "4月の予定はロックされていますが、
-      緊急キャンセル（病欠等）は承ります。
-      
-      ○○ちゃん 4/8(火) のお休みを登録しますか？
-      ① はい（病欠として登録）
-      ② いいえ"
-
-保護者: "①"
-
-Bot: "✅ ○○ちゃんの4/8(火)を病欠として登録しました。
-      お大事にしてください。🙏"
-
-処理: schedule_plans の該当日を削除 or status='cancelled'
-      + emergency_cancellation_log に記録
-```
-
-### 7.4 ロック判定ロジック
+### 7.3 ロック判定ロジック
 
 ```typescript
 function canModifySchedule(
@@ -671,7 +750,7 @@ function canModifySchedule(
 
 ### 8.1 新規テーブル一覧
 
-#### 8.1.1 `line_accounts` — LINEアカウント連携
+#### 8.1.1 `line_accounts` --- LINEアカウント連携
 
 ```sql
 CREATE TABLE IF NOT EXISTS line_accounts (
@@ -688,7 +767,7 @@ CREATE INDEX IF NOT EXISTS idx_line_accounts_user ON line_accounts(line_user_id)
 CREATE INDEX IF NOT EXISTS idx_line_accounts_child ON line_accounts(child_id);
 ```
 
-#### 8.1.2 `link_codes` — アカウント連携コード
+#### 8.1.2 `link_codes` --- アカウント連携コード
 
 ```sql
 CREATE TABLE IF NOT EXISTS link_codes (
@@ -706,14 +785,15 @@ CREATE INDEX IF NOT EXISTS idx_link_codes_code ON link_codes(code);
 CREATE INDEX IF NOT EXISTS idx_link_codes_child ON link_codes(child_id);
 ```
 
-#### 8.1.3 `conversations` — 会話状態管理
+#### 8.1.3 `line_conversations` --- 会話状態管理
 
 ```sql
-CREATE TABLE IF NOT EXISTS conversations (
+CREATE TABLE IF NOT EXISTS line_conversations (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
   line_user_id TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'IDLE' 
-    CHECK(state IN ('IDLE','SELECT_CHILD','SELECT_MONTH','COLLECTING','CONFIRM','SAVED','EDITING','EMERGENCY_CANCEL')),
+    CHECK(state IN ('IDLE','AUTH_LINK','SELECT_CHILD','SELECT_MONTH',
+                     'COLLECTING','CONFIRM','SAVED','MODIFY','CANCEL_REQUEST')),
   target_child_id TEXT REFERENCES children(id),
   target_year INTEGER,
   target_month INTEGER,
@@ -727,15 +807,15 @@ CREATE TABLE IF NOT EXISTS conversations (
   expires_at TEXT                          -- 24時間後に自動リセット
 );
 
-CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(line_user_id);
+CREATE INDEX IF NOT EXISTS idx_line_conversations_user ON line_conversations(line_user_id);
 ```
 
-#### 8.1.4 `conversation_logs` — 会話ログ
+#### 8.1.4 `line_conversation_logs` --- 会話ログ
 
 ```sql
-CREATE TABLE IF NOT EXISTS conversation_logs (
+CREATE TABLE IF NOT EXISTS line_conversation_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  conversation_id TEXT NOT NULL REFERENCES line_conversations(id),
   line_user_id TEXT NOT NULL,
   direction TEXT NOT NULL CHECK(direction IN ('incoming','outgoing')),
   message_type TEXT NOT NULL,             -- 'text', 'postback', 'flex', 'system'
@@ -744,11 +824,39 @@ CREATE TABLE IF NOT EXISTS conversation_logs (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_conv_logs_conv ON conversation_logs(conversation_id);
-CREATE INDEX IF NOT EXISTS idx_conv_logs_user ON conversation_logs(line_user_id);
+CREATE INDEX IF NOT EXISTS idx_line_conv_logs_conv ON line_conversation_logs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_line_conv_logs_user ON line_conversation_logs(line_user_id);
 ```
 
-#### 8.1.5 `emergency_cancellations` — 緊急キャンセル記録
+#### 8.1.5 `schedule_change_requests` --- 変更リクエスト記録
+
+```sql
+CREATE TABLE IF NOT EXISTS schedule_change_requests (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  child_id TEXT NOT NULL REFERENCES children(id),
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL,
+  request_type TEXT NOT NULL CHECK(request_type IN (
+    'initial_submit', 'modify', 'emergency_cancel'
+  )),
+  request_source TEXT NOT NULL DEFAULT 'LINE'
+    CHECK(request_source IN ('LINE', 'admin', 'UI')),
+  line_user_id TEXT,
+  changes_json TEXT NOT NULL,             -- 変更内容 (JSON)
+  -- changes_json例:
+  -- { "added": [{"day": 8, ...}],
+  --   "removed": [{"day": 10}],
+  --   "modified": [{"day": 15, "old": {...}, "new": {...}}] }
+  status TEXT NOT NULL DEFAULT 'applied'
+    CHECK(status IN ('applied', 'rejected', 'pending_review')),
+  rejection_reason TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_change_requests_child ON schedule_change_requests(child_id, year, month);
+```
+
+#### 8.1.6 `emergency_cancellations` --- 緊急キャンセル記録
 
 ```sql
 CREATE TABLE IF NOT EXISTS emergency_cancellations (
@@ -772,37 +880,38 @@ CREATE TABLE IF NOT EXISTS emergency_cancellations (
 #### `schedule_plans` テーブル
 ```sql
 -- source_file カラムの値追加 (変更不要、既存TEXT型で対応)
--- 'UI入力'   → 管理画面
--- 'Excel'    → アップロード
--- 'LINE'     → LINE経由
--- 'LINE_修正' → LINE経由修正
+-- 'UI入力'     → 管理画面
+-- 'Excel'      → アップロード
+-- 'LINE'       → LINE経由 (初回提出)
+-- 'LINE_修正'  → LINE経由 (変更)
+```
+
+**breakfast_flag 問題への対応方針:**
+```
+現状:
+  - schedule_plans に breakfast_flag カラムが存在しない
+  - 予定入力UIにも朝食チェックボックスがない
+  - Python Generator (pdf_writer.py) には has_breakfast がある
+  - 保育料案内: 朝食 150円/食
+  - 保育時間(提出用) シート col+4 = 朝食 (〇)
+
+方針 (LINE連携実装時に同時対応):
+  Phase 1 (LINE MVP): breakfast_flag なしで運用
+    → 朝食は非常にレアケース（7:00-7:30 早朝利用者のみ対象）
+    → AIヒアリングで「朝食希望ですか？」と聞き、
+       メモとして collected_data_json に記録
+    → 管理者が手動で Python Generator 用に設定
+
+  Phase 2 (LINE + DB統合): breakfast_flag カラムを追加
+    → マイグレーション 0003_add_breakfast_flag.sql
+    → ALTER TABLE schedule_plans ADD COLUMN breakfast_flag INTEGER DEFAULT 0;
+    → UI/API/charge_lines も同時に対応
 ```
 
 #### `children` テーブル
 ```sql
 -- 追加カラム不要
 -- link_codes テーブルで連携管理
-```
-
-### 8.3 マイグレーションファイル
-
-**`migrations/0002_line_integration.sql`**:
-```sql
--- あゆっこ保育園 業務自動化システム
--- Migration: 0002_line_integration.sql
--- Purpose: LINE Messaging API 連携用テーブル追加
--- Date: 2026-03-XX (実装時に確定)
-
--- 1. LINE アカウント連携
-CREATE TABLE IF NOT EXISTS line_accounts ( ... );
--- 2. 連携コード
-CREATE TABLE IF NOT EXISTS link_codes ( ... );
--- 3. 会話状態
-CREATE TABLE IF NOT EXISTS conversations ( ... );
--- 4. 会話ログ
-CREATE TABLE IF NOT EXISTS conversation_logs ( ... );
--- 5. 緊急キャンセル記録
-CREATE TABLE IF NOT EXISTS emergency_cancellations ( ... );
 ```
 
 ---
@@ -835,11 +944,8 @@ Body:
 Response: 200 OK (即座に返す、処理は非同期)
 ```
 
-**署名検証 (必須)**:
+**署名検証 (Cloudflare Workers版 / Web Crypto API)**:
 ```typescript
-import { createHmac } from 'node:crypto'; // × Node.js API使用不可
-
-// Cloudflare Workers版:
 async function verifySignature(body: string, signature: string, secret: string): Promise<boolean> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -865,29 +971,12 @@ async function verifySignature(body: string, signature: string, secret: string):
 #### `POST /api/line/link-codes`
 連携コード発行。
 ```json
-Request:
-{ "child_id": "child_mondal_aum" }
-
-Response:
-{ "code": "AYK-3F7K", "expires_at": "2026-04-03T00:00:00Z" }
+Request: { "child_id": "child_mondal_aum" }
+Response: { "code": "AYK-3F7K", "expires_at": "2026-04-03T00:00:00Z" }
 ```
 
 #### `GET /api/line/accounts`
 LINE連携状態一覧。
-```json
-Response:
-{
-  "accounts": [
-    {
-      "line_user_id": "U...",
-      "line_display_name": "田中太郎",
-      "children": [
-        { "child_id": "...", "name": "○○ちゃん", "linked_at": "..." }
-      ]
-    }
-  ]
-}
-```
 
 #### `GET /api/line/conversations?status=COLLECTING`
 進行中の会話一覧 (管理者モニタリング用)。
@@ -898,26 +987,208 @@ Response:
 #### `GET /api/line/logs/:lineUserId`
 特定ユーザーの会話ログ取得。
 
-### 9.3 Cron Trigger (リマインド)
+#### `POST /api/line/conversation/step`
+会話の次ステップ処理（内部使用）。
 
-```
-Schedule: 
-  - "0 1 15 * *"  (毎月15日 10:00 JST = 01:00 UTC)
-  - "0 1 25 * *"  (毎月25日 10:00 JST = 01:00 UTC)
+#### `POST /api/line/confirm`
+予定確認・保存処理（内部使用）。
 
-Handler:
-  export default {
-    async scheduled(event, env, ctx) {
-      // 翌月の未提出者にリマインド送信
-    }
-  }
+#### `POST /api/line/modify`
+変更リクエスト処理（内部使用）。
+
+#### `POST /api/line/cancel`
+緊急キャンセル処理（内部使用）。
+
+### 9.3 提出状況確認 API
+
+#### `GET /api/line/submission-status?year=2026&month=4`
+```json
+Response: {
+  "target": "2026年4月",
+  "total_linked": 28,
+  "submitted": 22,
+  "not_submitted": 6,
+  "not_submitted_children": [
+    { "child_id": "...", "name": "田中太郎", "parent_line_name": "田中" },
+    ...
+  ],
+  "deadline": "2026-03-31T23:59:59+09:00"
+}
 ```
 
 ---
 
-## 10. セキュリティ・プライバシー
+## 10. 運用フロー: 月次リマインドと提出管理
 
-### 10.1 個人情報保護
+### 10.1 月次運用サイクル
+
+```
+毎月のサイクル (例: 4月分の予定収集)
+
+3月15日 10:00 JST ── 初回リマインド Push送信
+  │  対象: line_accounts で連携済み & 4月の schedule_plans 未提出
+  │  メッセージ: "来月（4月）の利用予定の提出時期です。
+  │              「予定入力」と送信すると、AIがお聞きしながら
+  │              予定を登録します。"
+  │
+  ├── 保護者が随時LINE入力 ──
+  │
+3月25日 10:00 JST ── フォローアップリマインド
+  │  対象: まだ未提出の保護者のみ
+  │  メッセージ: "まだ4月の利用予定が届いていません。
+  │              前月末日（3/31）までにご提出をお願いします。"
+  │
+3月31日 23:59 JST ── 締切
+  │  
+4月1日 ────────── 4月分ロック開始
+  │  ・新規追加/変更は不可
+  │  ・緊急キャンセル(病欠等)のみ受付
+  │
+4月中 ─────────── 実績データ(ルクミー)と突合 → 帳票生成
+```
+
+### 10.2 Cron Trigger 実装方針
+
+**Cloudflare Pagesでは Cron Triggers が直接使えないため:**
+
+| 方式 | 説明 | 推奨度 |
+|------|------|--------|
+| 別途Worker | `ayukko-reminder-worker` でCron Trigger | ★★★ 推奨 |
+| 管理画面ボタン | 「リマインド送信」ボタンで手動 | ★★ バックアップ |
+| 外部Cron | cron-job.org → 管理API叩く | ★ 予備 |
+
+**推奨: Option 1 (別Worker) + Option 2 (手動バックアップ)**
+
+### 10.3 提出状況の管理画面表示
+
+管理画面に「LINE連携」タブを追加:
+```
+┌─────────────────────────────────────────────┐
+│ 📱 LINE連携状況  2026年4月                   │
+├─────────────────────────────────────────────┤
+│ 連携済保護者: 28名 / 全30名                  │
+│ 予定提出済:   22名 ✅                        │
+│ 未提出:       6名 ⚠️                        │
+│ 締切:         2026年3月31日 まであと 12日    │
+│                                              │
+│ [リマインド送信] [未提出者一覧]               │
+├─────────────────────────────────────────────┤
+│ 未提出:                                      │
+│ ・田中太郎 (2歳児) - 最終メッセージ: 3/18    │
+│ ・山田花子 (0歳児) - 最終メッセージ: なし    │
+│ ・...                                        │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## 11. 紙予定表 vs LINE入力 対比表
+
+### 11.1 項目対比
+
+| # | 紙予定表の項目 | LINE収集方法 | DB格納先 | 備考 |
+|---|---------------|-------------|---------|------|
+| 1 | 園児氏名 (B6) | アカウント連携で自動紐付 | children.name | 連携コードで特定 |
+| 2 | 年 (J1) | SELECT_MONTH状態で収集 | schedule_plans.year | 自動判定 |
+| 3 | 月 (M1) | SELECT_MONTH状態で収集 | schedule_plans.month | 自動判定 |
+| 4 | 日付 (B12:B26等) | パターン指定で全日展開 | schedule_plans.day | AI展開 |
+| 5 | 登所時間 (D列/O列) | 自由テキストで収集 | schedule_plans.planned_start | "8:30" |
+| 6 | 降所時間 (G列/R列) | 自由テキストで収集 | schedule_plans.planned_end | "17:00" |
+| 7 | 昼食フラグ (J/U列) | 時間帯自動推定+確認 | schedule_plans.lunch_flag | 0/1 |
+| 8 | おやつフラグ (K/V列) | am/pm分離して推定 | am_snack_flag + pm_snack_flag | 紙は統合1列 |
+| 9 | 夕食フラグ (L/W列) | 時間帯自動推定+確認 | schedule_plans.dinner_flag | 0/1 |
+
+### 11.2 紙にない項目 (LINE/システムで追加)
+
+| # | 項目 | LINE収集方法 | 備考 |
+|---|------|-------------|------|
+| 10 | 朝食 | 早朝利用時にAIが質問 | ★ breakfast_flag (Phase 2) |
+| 11 | 変更履歴 | schedule_change_requests | 紙は上書き/口頭 |
+| 12 | 提出日時 | line_conversations.updated_at | 紙は不明確 |
+| 13 | 緊急キャンセル記録 | emergency_cancellations | 紙は電話のみ |
+
+### 11.3 食事区分の対応関係
+
+```
+紙予定表 (3区分)           LINE/DB (5区分)              保育時間(提出用)
+─────────────────         ──────────────────           ──────────────────
+                          breakfast_flag (朝食150円)    朝食 (〇)
+昼食 (〇)                 lunch_flag (昼食300円)        昼食 (〇)
+おやつ (〇) ← 統合        am_snack_flag (朝おやつ50円)  おやつ (〇) ← 統合
+                          pm_snack_flag (午後おやつ100円)
+夕食 (〇)                 dinner_flag (夕食300円)        夕食 (〇)
+```
+
+**紙では「おやつ」1列 → DBでは am/pm 2列に分離:**
+- LINE AIは時間帯から自動判定:
+  - 登園 ≤ 10:00 → am_snack = 1
+  - 降園 ≥ 15:00 → pm_snack = 1
+- 紙で「おやつ〇」は通常 pm_snack と解釈 (午後のほうが一般的)
+
+---
+
+## 12. 既存システムとの統合
+
+### 12.1 schedule_plans テーブルへの統合
+
+LINE経由で収集した予定は、**既存の schedule_plans テーブルにそのまま書き込む**。
+
+```sql
+-- LINE経由の予定保存 (既存 POST /api/schedules の内部ロジックを再利用)
+INSERT OR REPLACE INTO schedule_plans
+  (id, child_id, year, month, day, planned_start, planned_end,
+   lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file)
+VALUES
+  (lower(hex(randomblob(8))), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LINE');
+```
+
+### 12.2 既存機能との連携
+
+| 既存機能 | LINE連携の影響 | 対応 |
+|---------|--------------|------|
+| ダッシュボード (DB直結) | LINE入力分も即座に反映 | 変更不要 |
+| 帳票生成 (Python Generator) | schedule_plans を読むので自動対応 | 変更不要 |
+| UI予定入力 | LINEと並行利用可能 | 競合時は後勝ち (UPSERT) |
+| 課金計算 (usage-calculator) | schedule_plans ベースなので自動対応 | 変更不要 |
+
+### 12.3 データの信頼性
+
+```
+データ競合ポリシー:
+  1. schedule_plans の UNIQUE(child_id, year, month, day) で保護
+  2. INSERT OR REPLACE (UPSERT) で後勝ち
+  3. source_file カラムで入力元を区別:
+     'UI入力' = 管理画面
+     'Excel'  = ファイルアップロード  
+     'LINE'   = LINE初回提出
+     'LINE_修正' = LINE変更
+  4. schedule_change_requests で全変更履歴を保持
+```
+
+### 12.4 緊急キャンセルの扱い
+
+```
+LINE「今日休みます」→ 2つのDB操作:
+
+1. schedule_plans: 該当日を削除 (or planned_start/end を NULL に)
+   DELETE FROM schedule_plans 
+   WHERE child_id = ? AND year = ? AND month = ? AND day = ?;
+
+2. emergency_cancellations: 記録を追加
+   INSERT INTO emergency_cancellations 
+     (child_id, year, month, day, reason, cancelled_by, line_user_id,
+      original_start, original_end)
+   VALUES (?, ?, ?, ?, 'illness', 'LINE', ?, ?, ?);
+
+→ 既存の帳票生成は schedule_plans に行がない = 欠席として処理
+→ emergency_cancellations は管理者の追跡用
+```
+
+---
+
+## 13. セキュリティ・プライバシー
+
+### 13.1 個人情報保護
 
 | データ | 分類 | 保護措置 |
 |--------|------|---------|
@@ -926,7 +1197,7 @@ Handler:
 | 会話ログ | 個人情報 | 90日後に自動削除 (日単位) |
 | LLM送信データ | 要注意 | 児童名をイニシャルに変換して送信 |
 
-### 10.2 LLMへの送信データのマスキング
+### 13.2 LLMへの送信データのマスキング
 
 ```
 送信前: "○○ちゃんの4月の予定を登録しました"
@@ -935,7 +1206,7 @@ LLMへ:  "Child_Aの4月の予定を登録しました"
 復元:   Child_A → child_mondal_aum (サーバー側マッピング)
 ```
 
-### 10.3 セキュリティチェックリスト
+### 13.3 セキュリティチェックリスト
 
 - [ ] LINE Webhook署名検証 (X-Line-Signature)
 - [ ] Channel Secret をCloudflare Secretに保存
@@ -946,7 +1217,7 @@ LLMへ:  "Child_Aの4月の予定を登録しました"
 - [ ] LLMへの個人情報マスキング
 - [ ] CORS設定 (Webhookは全オリジン許可、管理APIは制限)
 
-### 10.4 Cloudflare Secrets 一覧
+### 13.4 Cloudflare Secrets 一覧
 
 ```bash
 # 本番デプロイ時に設定
@@ -956,43 +1227,35 @@ wrangler pages secret put LINE_CHANNEL_ACCESS_TOKEN --project-name ayukko-nurser
 wrangler pages secret put OPENAI_API_KEY --project-name ayukko-nursery
 ```
 
-**`.dev.vars` (ローカル開発用)**:
-```
-LINE_CHANNEL_ID=your_channel_id
-LINE_CHANNEL_SECRET=your_channel_secret
-LINE_CHANNEL_ACCESS_TOKEN=your_channel_access_token
-OPENAI_API_KEY=your_openai_api_key
-```
-
 ---
 
-## 11. 料金・コスト見積
+## 14. 料金・コスト見積
 
-### 11.1 LINE公式アカウント
+### 14.1 LINE公式アカウント
 
 | プラン | 月額 | 無料メッセージ | 追加メッセージ |
 |--------|------|--------------|--------------|
-| コミュニケーション (無料) | ¥0 | 200通/月 | 不可 |
-| ライト | ¥5,000 | 5,000通/月 | ¥3/通 |
-| スタンダード | ¥15,000 | 30,000通/月 | ~¥3/通 |
+| コミュニケーション (無料) | 0円 | 200通/月 | 不可 |
+| ライト | 5,000円 | 5,000通/月 | 3円/通 |
+| スタンダード | 15,000円 | 30,000通/月 | ~3円/通 |
 
 **あゆっこの想定**:
-- 園児30名 × 保護者30名 × 1回話あたり約15メッセージ = 450通/月
-- リマインド2回 × 30名 = 60通/月
-- **合計: 約510通/月 → ライトプラン推奨 (¥5,000/月)**
+- 園児30名 x 保護者30名 x 1会話あたり約15メッセージ = 450通/月
+- リマインド2回 x 30名 = 60通/月
+- **合計: 約510通/月 → ライトプラン推奨 (5,000円/月)**
 - 注: Reply Message はカウント対象外なので実質フリープランでも可能な場合あり
 
-### 11.2 OpenAI API
+### 14.2 OpenAI API
 
 | 項目 | 見積 |
 |------|------|
 | モデル | gpt-4o-mini |
-| 1会話あたり | ~10ターン × (2000 input + 200 output) tokens |
-| 月間 | 30園児 × 22,000 tokens = 660,000 tokens |
-| コスト | Input: $0.15/1M × 0.6M = $0.09, Output: $0.60/1M × 0.06M = $0.036 |
+| 1会話あたり | ~10ターン x (2000 input + 200 output) tokens |
+| 月間 | 30園児 x 22,000 tokens = 660,000 tokens |
+| コスト | Input: $0.15/1M x 0.6M = $0.09, Output: $0.60/1M x 0.06M = $0.036 |
 | **月額合計** | **~$0.13 (~20円/月)** |
 
-### 11.3 Cloudflare Workers/D1
+### 14.3 Cloudflare Workers/D1
 
 | 項目 | Free Plan上限 | 想定使用量 |
 |------|-------------|-----------|
@@ -1001,28 +1264,28 @@ OPENAI_API_KEY=your_openai_api_key
 | D1 writes | 100K/日 | ~100/日 |
 | D1 storage | 5GB | <100MB |
 
-### 11.4 月額合計コスト見積
+### 14.4 月額合計コスト見積
 
 | 項目 | コスト |
 |------|--------|
-| LINE ライトプラン | ¥5,000 |
-| OpenAI API | ¥20 |
-| Cloudflare (Free) | ¥0 |
-| **合計** | **¥5,020/月** |
+| LINE ライトプラン | 5,000円 |
+| OpenAI API | 20円 |
+| Cloudflare (Free) | 0円 |
+| **合計** | **5,020円/月** |
 
-※ フリープランでReply Message中心なら¥20/月のみ
+※ フリープランでReply Message中心なら20円/月のみ
 
 ---
 
-## 12. 依存関係・技術スタック
+## 15. 依存関係・技術スタック
 
-### 12.1 新規依存パッケージ
+### 15.1 新規依存パッケージ
 
 ```json
 {
   "dependencies": {
     "hono": "^4.0.0"           // 既存
-    // LINE SDK不要 — Cloudflare Workers非対応のためfetch直接呼出
+    // LINE SDK不要 --- Cloudflare Workers非対応のためfetch直接呼出
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20250705.0"  // 既存
@@ -1033,7 +1296,7 @@ OPENAI_API_KEY=your_openai_api_key
 **注意: `@line/bot-sdk` は Node.js依存 (http, crypto) のため使用不可。
 LINE APIはfetch + Web Crypto APIで直接呼び出す。**
 
-### 12.2 外部API依存関係
+### 15.2 外部API依存関係
 
 | API | 用途 | ドキュメント |
 |-----|------|------------|
@@ -1042,11 +1305,10 @@ LINE APIはfetch + Web Crypto APIで直接呼び出す。**
 | LINE Push API | リマインド送信 | https://developers.line.biz/en/reference/messaging-api/#send-push-message |
 | OpenAI Chat Completions | AIヒアリング | https://platform.openai.com/docs/api-reference/chat |
 
-### 12.3 LINE APIクライアント設計 (SDKなし)
+### 15.3 LINE APIクライアント設計 (SDKなし)
 
 ```typescript
 // src/lib/line-client.ts
-
 export class LineClient {
   private accessToken: string;
   private channelSecret: string;
@@ -1061,11 +1323,8 @@ export class LineClient {
   async verifySignature(body: string, signature: string): Promise<boolean> {
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey(
-      'raw',
-      encoder.encode(this.channelSecret),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
+      'raw', encoder.encode(this.channelSecret),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
     );
     const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(body));
     const expected = btoa(String.fromCharCode(...new Uint8Array(sig)));
@@ -1106,11 +1365,10 @@ export class LineClient {
 }
 ```
 
-### 12.4 Bindings拡張
+### 15.4 Bindings拡張
 
 ```typescript
 // src/types/index.ts に追加
-
 export type Bindings = {
   DB: D1Database;
   R2: R2Bucket;
@@ -1124,9 +1382,9 @@ export type Bindings = {
 
 ---
 
-## 13. マイグレーション計画
+## 16. マイグレーション計画
 
-### 13.1 段階的マイグレーション
+### 16.1 段階的マイグレーション
 
 ```
 Phase 1: DBスキーマ追加 (テーブル作成のみ)
@@ -1146,88 +1404,121 @@ Phase 5: 変更・キャンセル対応
 
 Phase 6: リマインド (Cron)
   └── 自動リマインド配信
+
+Phase 7 (将来): breakfast_flag 追加
+  └── 0003_add_breakfast_flag.sql
 ```
 
-### 13.2 マイグレーションSQL (完全版)
+### 16.2 マイグレーションSQL 完全版
 
 ```sql
+-- ================================================================
 -- migrations/0002_line_integration.sql
 -- あゆっこ保育園 業務自動化システム
--- Migration: 0002_line_integration.sql
 -- Purpose: LINE Messaging API 連携用テーブル追加
--- Created: 2026-03-XX
+-- Created: 2026-03-XX (実装時に日付確定)
+-- Depends: 0001_initial_schema.sql
+-- ================================================================
 
 -- ============================================================
--- LINEアカウント連携
+-- 1. LINEアカウント連携
+-- 1つのLINE userId が複数の children に紐づく (兄弟)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS line_accounts (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-  line_user_id TEXT NOT NULL,
+  line_user_id TEXT NOT NULL,             -- LINE userId (U + 32hex)
   child_id TEXT NOT NULL REFERENCES children(id),
-  line_display_name TEXT,
+  line_display_name TEXT,                 -- LINEの表示名
   linked_at TEXT DEFAULT (datetime('now')),
-  is_active INTEGER DEFAULT 1,
+  is_active INTEGER DEFAULT 1,           -- 0 = unfollow / 退園
   UNIQUE(line_user_id, child_id)
 );
 CREATE INDEX IF NOT EXISTS idx_line_accounts_user ON line_accounts(line_user_id);
 CREATE INDEX IF NOT EXISTS idx_line_accounts_child ON line_accounts(child_id);
 
 -- ============================================================
--- アカウント連携コード
+-- 2. アカウント連携コード (使い捨て)
+-- 管理画面で発行 → 保護者がLINEで入力 → 紐付け完了
 -- ============================================================
 CREATE TABLE IF NOT EXISTS link_codes (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
-  code TEXT NOT NULL UNIQUE,
+  code TEXT NOT NULL UNIQUE,              -- 'AYK-XXXX'
   child_id TEXT NOT NULL REFERENCES children(id),
   nursery_id TEXT NOT NULL REFERENCES nurseries(id),
   created_at TEXT DEFAULT (datetime('now')),
-  expires_at TEXT NOT NULL,
-  used_at TEXT,
-  used_by_line_user_id TEXT
+  expires_at TEXT NOT NULL,               -- 有効期限 (発行から30日)
+  used_at TEXT,                           -- 使用日時 (NULL=未使用)
+  used_by_line_user_id TEXT               -- 使用したLINE userId
 );
 CREATE INDEX IF NOT EXISTS idx_link_codes_code ON link_codes(code);
 CREATE INDEX IF NOT EXISTS idx_link_codes_child ON link_codes(child_id);
 
 -- ============================================================
--- 会話状態管理
+-- 3. 会話状態管理
+-- 1ユーザーにつき1アクティブ会話
 -- ============================================================
-CREATE TABLE IF NOT EXISTS conversations (
+CREATE TABLE IF NOT EXISTS line_conversations (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
   line_user_id TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'IDLE'
-    CHECK(state IN ('IDLE','SELECT_CHILD','SELECT_MONTH','COLLECTING','CONFIRM','SAVED','EDITING','EMERGENCY_CANCEL')),
+    CHECK(state IN ('IDLE','AUTH_LINK','SELECT_CHILD','SELECT_MONTH',
+                     'COLLECTING','CONFIRM','SAVED','MODIFY','CANCEL_REQUEST')),
   target_child_id TEXT REFERENCES children(id),
   target_year INTEGER,
   target_month INTEGER,
-  collected_data_json TEXT,
-  ai_context_json TEXT,
+  collected_data_json TEXT,               -- 収集済み予定データ (JSON)
+  ai_context_json TEXT,                   -- LLM会話履歴 (最新10ターン)
   multi_child_mode TEXT DEFAULT 'single'
     CHECK(multi_child_mode IN ('single','batch')),
-  batch_children_json TEXT,
+  batch_children_json TEXT,               -- バッチモード時の対象児童リスト
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
-  expires_at TEXT
+  expires_at TEXT                          -- 24時間後に自動リセット
 );
-CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(line_user_id);
+CREATE INDEX IF NOT EXISTS idx_line_conversations_user ON line_conversations(line_user_id);
 
 -- ============================================================
--- 会話ログ
+-- 4. 会話ログ (監査・デバッグ・90日保持)
 -- ============================================================
-CREATE TABLE IF NOT EXISTS conversation_logs (
+CREATE TABLE IF NOT EXISTS line_conversation_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  conversation_id TEXT NOT NULL REFERENCES line_conversations(id),
   line_user_id TEXT NOT NULL,
   direction TEXT NOT NULL CHECK(direction IN ('incoming','outgoing')),
-  message_type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  ai_raw_response TEXT,
+  message_type TEXT NOT NULL,             -- 'text', 'postback', 'flex', 'system'
+  content TEXT NOT NULL,                  -- メッセージ本文
+  ai_raw_response TEXT,                   -- LLM生レスポンス (outgoing時のみ)
   created_at TEXT DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_conv_logs_conv ON conversation_logs(conversation_id);
-CREATE INDEX IF NOT EXISTS idx_conv_logs_user ON conversation_logs(line_user_id);
+CREATE INDEX IF NOT EXISTS idx_line_conv_logs_conv ON line_conversation_logs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_line_conv_logs_user ON line_conversation_logs(line_user_id);
 
 -- ============================================================
--- 緊急キャンセル記録
+-- 5. 予定変更リクエスト記録 (監査証跡)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS schedule_change_requests (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+  child_id TEXT NOT NULL REFERENCES children(id),
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL,
+  request_type TEXT NOT NULL CHECK(request_type IN (
+    'initial_submit', 'modify', 'emergency_cancel'
+  )),
+  request_source TEXT NOT NULL DEFAULT 'LINE'
+    CHECK(request_source IN ('LINE', 'admin', 'UI')),
+  line_user_id TEXT,
+  changes_json TEXT NOT NULL,             -- 変更内容 (JSON)
+  status TEXT NOT NULL DEFAULT 'applied'
+    CHECK(status IN ('applied', 'rejected', 'pending_review')),
+  rejection_reason TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_change_requests_child
+  ON schedule_change_requests(child_id, year, month);
+
+-- ============================================================
+-- 6. 緊急キャンセル記録
+-- 当月ロック中に受け付けた欠席のみ記録
 -- ============================================================
 CREATE TABLE IF NOT EXISTS emergency_cancellations (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
@@ -1235,21 +1526,41 @@ CREATE TABLE IF NOT EXISTS emergency_cancellations (
   year INTEGER NOT NULL,
   month INTEGER NOT NULL,
   day INTEGER NOT NULL,
-  reason TEXT,
-  cancelled_by TEXT,
+  reason TEXT,                            -- 'illness', 'family', 'other'
+  cancelled_by TEXT,                      -- 'LINE' or 'admin'
   line_user_id TEXT,
-  original_start TEXT,
-  original_end TEXT,
+  original_start TEXT,                    -- 元の予定開始 (HH:MM)
+  original_end TEXT,                      -- 元の予定終了 (HH:MM)
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE(child_id, year, month, day)
 );
 ```
 
+### 16.3 将来マイグレーション (breakfast_flag)
+
+```sql
+-- ================================================================
+-- migrations/0003_add_breakfast_flag.sql
+-- Purpose: 朝食フラグの追加 (Phase 2)
+-- Depends: 0001_initial_schema.sql
+-- ================================================================
+
+-- schedule_plans に朝食フラグ追加
+ALTER TABLE schedule_plans ADD COLUMN breakfast_flag INTEGER DEFAULT 0;
+
+-- usage_facts に朝食フラグ追加
+ALTER TABLE usage_facts ADD COLUMN has_breakfast INTEGER DEFAULT 0;
+
+-- charge_lines の charge_type に 'breakfast' を追加
+-- (CHECK制約の変更はSQLiteでは ALTER TABLE では不可のため、
+--  アプリケーション側で対応 or テーブル再作成)
+```
+
 ---
 
-## 14. 実装ロードマップ
+## 17. 実装ロードマップ
 
-### 14.1 全体スケジュール (推奨)
+### 17.1 全体スケジュール (推奨)
 
 ```
 Week 1-2: 基盤構築
@@ -1277,7 +1588,7 @@ Week 6: テスト・調整・デプロイ
 └── Day 30: 本番デプロイ + ドキュメント整備
 ```
 
-### 14.2 依存関係グラフ
+### 17.2 依存関係グラフ
 
 ```
 DBマイグレーション ─┬─► LINE Webhook ─┬─► AI会話エンジン ─┬─► 変更ルール
@@ -1289,7 +1600,7 @@ LINE公式アカウント開設──►              │                    ├
                     └─► 管理画面UI
 ```
 
-### 14.3 MVP定義 (Minimum Viable Product)
+### 17.3 MVP定義 (Minimum Viable Product)
 
 **Phase 1 MVP (Week 1-4)**:
 - ✅ LINE友だち追加 → アカウント連携
@@ -1307,9 +1618,9 @@ LINE公式アカウント開設──►              │                    ├
 
 ---
 
-## 15. テスト計画
+## 18. テスト計画
 
-### 15.1 テスト種別
+### 18.1 テスト種別
 
 | 種別 | 対象 | ツール |
 |------|------|--------|
@@ -1318,7 +1629,7 @@ LINE公式アカウント開設──►              │                    ├
 | 会話テスト | AI会話フロー全パターン | LINEテストツール |
 | E2Eテスト | 友だち追加→予定登録→確認 | 実機テスト |
 
-### 15.2 テストシナリオ
+### 18.2 テストシナリオ
 
 #### 正常系
 1. 新規ユーザーが友だち追加 → 連携コード入力 → 連携完了
@@ -1341,21 +1652,11 @@ LINE公式アカウント開設──►              │                    ├
 14. 31日のある月 / 28日の月 → 正しい日数処理
 15. 祝日を含む月 → 祝日確認メッセージ
 
-### 15.3 LINEテスト環境
-
-```
-開発環境:
-├── LINE Developers Console → テストチャネル作成
-├── Webhook URL → Cloudflare Workers Preview URL
-├── ngrok代替 → wrangler dev --remote (Cloudflare Tunnel)
-└── LINE Official Account Manager → テスト配信
-```
-
 ---
 
-## 16. 運用マニュアル
+## 19. 運用マニュアル
 
-### 16.1 管理者の日常運用
+### 19.1 管理者の日常運用
 
 | タイミング | 作業 | 場所 |
 |-----------|------|------|
@@ -1365,7 +1666,7 @@ LINE公式アカウント開設──►              │                    ├
 | 随時 | 会話ログ確認 (異常がないか) | 管理画面 |
 | 退園時 | LINE連携解除 | 管理画面 |
 
-### 16.2 保護者向け説明資料 (案)
+### 19.2 保護者向け説明資料 (案)
 
 ```
 📱 LINEで利用予定を提出する方法
@@ -1388,7 +1689,7 @@ LINE公式アカウント開設──►              │                    ├
   → 「今日休みます」とLINEで送信
 ```
 
-### 16.3 障害対応
+### 19.3 障害対応
 
 | 障害 | 影響 | 対応 |
 |------|------|------|
@@ -1397,15 +1698,42 @@ LINE公式アカウント開設──►              │                    ├
 | D1障害 | 全機能停止 | Cloudflare Status確認 → 復旧待ち |
 | 会話状態不整合 | 会話ループ | 管理画面から会話リセット |
 
-### 16.4 監視項目
+---
 
-| 指標 | 閾値 | アラート |
-|------|------|---------|
-| Webhook応答時間 | > 5秒 | 警告 |
-| AI応答時間 | > 15秒 | 警告 |
-| 会話ログなし期間 | 24時間以上 | 確認 |
-| 連携コード使用率 | < 50% (月末) | リマインド送信 |
-| エラー率 | > 5% | 緊急 |
+## 20. v1.0 → v2.0 設計差分
+
+### 20.1 ドキュメント構造の変更
+
+| 変更 | v1.0 | v2.0 | 理由 |
+|------|------|------|------|
+| テーブル名 | conversations | line_conversations | 既存テーブルとの衝突回避 |
+| テーブル名 | conversation_logs | line_conversation_logs | 同上 |
+| 新テーブル | - | schedule_change_requests | 変更履歴の監査証跡 |
+| 状態マシン | 8状態 | 10状態 | AUTH_LINK, MODIFY, CANCEL_REQUEST追加 |
+| セクション追加 | - | 紙予定表対比 (11) | ユーザー要望 |
+| セクション追加 | - | 既存システム統合 (12) | 統合設計の明確化 |
+| セクション追加 | - | 運用フロー (10) | 月次サイクル詳細化 |
+| セクション追加 | - | v1→v2差分 (20) | 変更追跡 |
+
+### 20.2 設計判断の変更
+
+| 判断 | v1.0 | v2.0 | 理由 |
+|------|------|------|------|
+| breakfast_flag | 未考慮 | Phase 2で対応 | REQUIREMENTS_CHECKで課題発覚 |
+| おやつの扱い | am/pm 2列 | 紙は統合、DB分離の対比を明記 | 紙予定表との整合性確認 |
+| LLMの責務 | 曖昧 | 明確に分離 (5.3.4) | ビジネスルールはシステム側 |
+| Cron方式 | 概要のみ | 3方式比較+推奨 | 実装可能性の検討 |
+
+### 20.3 残課題 (実装着手前に要確認)
+
+| # | 課題 | 担当 | 期限 |
+|---|------|------|------|
+| 1 | LINE公式アカウントの開設とMessaging API有効化 | 木村さん | 実装前 |
+| 2 | OpenAI APIキーの準備 | 開発チーム | 実装前 |
+| 3 | breakfast_flag の要否を木村さんに最終確認 | モギモギ | 設計レビュー時 |
+| 4 | 紙予定表のおやつ(1列) → am/pm(2列) の運用ルール確認 | 木村さん | 設計レビュー時 |
+| 5 | 緊急キャンセル時の schedule_plans 処理方法 (DELETE vs NULL化) | 設計レビュー | 実装前 |
+| 6 | 保育料案内の延長/夜間時間帯 (seed.sql不整合問題) の修正 | 開発チーム | LINE実装前 |
 
 ---
 
@@ -1456,7 +1784,7 @@ LINE公式アカウント開設──►              │                    ├
       "type": "box",
       "layout": "vertical",
       "contents": [
-        { "type": "text", "text": "📅 4月の利用予定", "weight": "bold", "size": "lg" },
+        { "type": "text", "text": "4月の利用予定", "weight": "bold", "size": "lg" },
         { "type": "text", "text": "○○ちゃん", "size": "sm", "color": "#666666" }
       ]
     },
@@ -1464,13 +1792,13 @@ LINE公式アカウント開設──►              │                    ├
       "type": "box",
       "layout": "vertical",
       "contents": [
-        { "type": "text", "text": "基本: 月〜金 8:30-17:00", "size": "sm" },
+        { "type": "text", "text": "基本: 月-金 8:30-17:00", "size": "sm" },
         { "type": "text", "text": "食事: 午前おやつ+昼食+午後おやつ", "size": "sm" },
         { "type": "separator" },
         { "type": "text", "text": "例外:", "weight": "bold", "size": "sm" },
-        { "type": "text", "text": "4/10(木) ❌ お休み", "size": "sm" },
-        { "type": "text", "text": "4/15(火) 8:30-19:00 🍽夕食あり", "size": "sm" },
-        { "type": "text", "text": "4/22(火) ❌ お休み", "size": "sm" },
+        { "type": "text", "text": "4/10(木) お休み", "size": "sm" },
+        { "type": "text", "text": "4/15(火) 8:30-19:00 夕食あり", "size": "sm" },
+        { "type": "text", "text": "4/22(火) お休み", "size": "sm" },
         { "type": "separator" },
         { "type": "text", "text": "合計: 19日利用予定", "weight": "bold" }
       ]
@@ -1481,12 +1809,12 @@ LINE公式アカウント開設──►              │                    ├
       "contents": [
         {
           "type": "button",
-          "action": { "type": "postback", "label": "✅ 登録する", "data": "confirm=yes" },
+          "action": { "type": "postback", "label": "登録する", "data": "confirm=yes" },
           "style": "primary"
         },
         {
           "type": "button",
-          "action": { "type": "postback", "label": "✏️ 修正する", "data": "confirm=edit" },
+          "action": { "type": "postback", "label": "修正する", "data": "confirm=edit" },
           "style": "secondary"
         }
       ]
@@ -1562,21 +1890,10 @@ LINE公式アカウント開設──►              │                    ├
     }
   ]
   // Cron Trigger (リマインド用) - Pages Functionsでは
-  // Scheduled Eventsの代わりに外部Cronサービスまたは
-  // 別途Workerで実装する必要がある
-  // "triggers": {
-  //   "crons": ["0 1 15 * *", "0 1 25 * *"]
-  // }
+  // Scheduled Eventsの代わりに別途Workerで実装
+  // "triggers": { "crons": ["0 1 15 * *", "0 1 25 * *"] }
 }
 ```
-
-**注意**: Cloudflare Pagesでは Cron Triggers が直接使えないため、
-リマインド機能は以下のいずれかで実装:
-1. **別途Cloudflare Worker** (`ayukko-reminder-worker`) を作成してCron Trigger
-2. **管理画面の「リマインド送信」ボタン** で手動送信
-3. **外部Cronサービス** (cron-job.org等) から管理APIを叩く
-
-推奨: **Option 1** (別Worker) + **Option 2** (手動バックアップ)
 
 ---
 
@@ -1585,6 +1902,7 @@ LINE公式アカウント開設──►              │                    ├
 | バージョン | 日付 | 内容 |
 |-----------|------|------|
 | 1.0 | 2026-03-04 | 初版作成 |
+| 2.0 | 2026-03-04 | v2.0: テーブル名変更(line_prefix追加)、状態マシン10状態化、紙予定表対比、breakfast_flag対応方針、既存システム統合設計、運用フロー詳細化、schedule_change_requestsテーブル追加、設計差分セクション追加 |
 
 ---
 
