@@ -1,9 +1,13 @@
 # 木村さん要件 vs 現状実装 チェック結果
 
-> **Version**: 1.0 (2026-03-04)
+> **Version**: 1.1 (2026-03-04)
 > **対象システム**: あゆっこ業務自動化システム v6.1
 > **最終確認コミット**: c07e7f2 (v6.0 + v6.1 ダッシュボードDB直結)
 > **目的**: 木村さん側の全要望を要件として洗い出し、現在のコードが満たしているかを判定する
+> **関連設計書**: MULTI_FACILITY_DESIGN.md (v2.0), LINE_SCHEDULE_COLLECTION_PLAN.md (v4.0)
+>
+> **v1.1 変更点**: 要件①の保護者入力チャネルを **Web/PWA ポータル (Primary)** に更新。
+> LINE は Phase 2 Optional の補助チャネルとして位置付け変更。
 
 ---
 
@@ -35,8 +39,10 @@
 
 ### 補足: 「保護者が入力する」について
 木村さんの最終要望は「保護者からの紙提出を廃止」。保護者入力の手段は：
-1. **LINE経由** (設計済み、未実装) → LINE_SCHEDULE_COLLECTION_PLAN.md 参照
-2. **保護者用Webポータル** (未設計)
+1. **Web/PWA ポータル (Primary)** (設計済み、未実装) → MULTI_FACILITY_DESIGN.md v2.0 セクション6 参照
+   - ★★★ これだけで要件①は100%充足される
+2. **LINE AI ヒアリング (Phase 2 Optional)** (設計済み、未実装) → LINE_SCHEDULE_COLLECTION_PLAN.md v4.0 参照
+   - Web入力が難しい保護者向けの補助チャネル。希望施設のみ有効化。
 3. **園スタッフが代行入力** (現在の実装) → これは過渡期の運用として有効
 
 ---
@@ -254,7 +260,7 @@ seed.sql の pricing_rules:
 
 ### 9. 保護者入力導線 (A-5)
 
-LINE連携 (設計済み) or 保護者Webポータルの実装。過渡期は園スタッフ代行入力で運用可能。
+**設計済み**: Web/PWA ポータル (Primary, MULTI_FACILITY_DESIGN.md v2.0 セクション6) および LINE AI ヒアリング (Phase 2 Optional, LINE_SCHEDULE_COLLECTION_PLAN.md v4.0) の実装。過渡期は園スタッフ代行入力で運用可能。
 
 ### 10. schedule_plans の source_file 値統一
 
@@ -310,3 +316,4 @@ LINE連携 (設計済み) or 保護者Webポータルの実装。過渡期は園
 | バージョン | 日付 | 内容 |
 |-----------|------|------|
 | 1.0 | 2026-03-04 | 初版作成。全要件の確認結果と不整合の詳細を記載 |
+| 1.1 | 2026-03-04 | 要件①の保護者入力チャネルを Web/PWA Primary + LINE Optional に更新。関連設計書参照を MULTI_FACILITY_DESIGN.md v2.0 および LINE_SCHEDULE_COLLECTION_PLAN.md v4.0 に更新 |
