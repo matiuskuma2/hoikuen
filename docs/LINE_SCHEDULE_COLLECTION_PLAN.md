@@ -1,10 +1,11 @@
 # LINE Messaging API 月次利用予定収集システム 設計計画書
 
-> **Version**: 2.0 (2026-03-04)
+> **Version**: 3.0 (2026-03-04)
 > **Status**: Design Only (実装前)
 > **Author**: Ayukko Nursery Automation Team
-> **Parent System**: 滋賀医科大学学内保育所 あゆっこ 業務自動化システム v6.1
-> **前版からの変更**: v1.0 → v2.0 設計差分セクション追加、紙予定表対比、breakfast_flag対応、運用フロー精緻化
+> **Parent System**: 保育園業務自動化プラットフォーム (旧: あゆっこ業務自動化システム v6.1)
+> **前版からの変更**: v2.0 → v3.0 マルチ施設対応、保護者Webポータル設計、施設別LINE設定、認証設計追加
+> **関連ドキュメント**: [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md)
 
 ---
 
@@ -30,6 +31,9 @@
 18. [テスト計画](#18-テスト計画)
 19. [運用マニュアル](#19-運用マニュアル)
 20. [v1.0 → v2.0 設計差分](#20-v10--v20-設計差分)
+21. [マルチ施設対応拡張 (v3.0)](#21-マルチ施設対応拡張-v30)
+22. [保護者Webポータル設計 (v3.0)](#22-保護者webポータル設計-v30)
+23. [v2.0 → v3.0 設計差分](#23-v20--v30-設計差分)
 
 ---
 
@@ -38,20 +42,26 @@
 ### 1.1 目的
 保護者が毎月紙で提出している「利用予定表」を廃止し、**LINE公式アカウント上でAIがヒアリング形式で予定を収集→自動登録**するシステムを構築する。
 
-### 1.2 現行フロー (AS-IS)
+### 1.2 システムのスコープ (v3.0)
+
+本設計は**約30の委託保育施設**への展開を前提とする。LINE予定収集はコア共通機能（全施設適用）。
+詳細なマルチ施設アーキテクチャは [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md) を参照。
+
+### 1.3 現行フロー (AS-IS)
 ```
 保護者 → 紙の予定表を記入 → 保育所に提出 → スタッフが手動入力/Excel転記
 ```
 
-### 1.3 目標フロー (TO-BE)
+### 1.4 目標フロー (TO-BE)
 ```
-保護者 → LINEで友だち追加 → アカウント連携(1回)
-→ 毎月リマインド受信 → LINEでAIとやり取り → 自動でDB登録
-→ 変更もLINEで → 締切管理・ロック自動適用
+保護者 → LINEで友だち追加 or Webポータルへアクセス → アカウント連携(1回)
+→ 毎月リマインド受信 → LINEでAIとやり取り or Webカレンダーで入力 → 自動でDB登録
+→ 変更もLINE/Webで → 締切管理・ロック自動適用
 → 既存の帳票生成システムがそのまま利用
+→ (あゆっこ) 利用明細をスマホで確認
 ```
 
-### 1.4 主要な設計原則
+### 1.5 主要な設計原則
 1. **1つの識別子で連携**: 保護者はLINE友だち追加 + 簡単な識別コードで紐付け
 2. **AIが聞き漏らさない**: 必須項目が揃うまでフォローアップ質問を継続
 3. **予定以外は断る**: AIのスコープを予定収集に限定（プロンプトで制御）
@@ -60,15 +70,18 @@
 6. **既存DB統合**: 現在の `schedule_plans` テーブルに直接書き込み（`source_file = 'LINE'`）
 7. **紙予定表と同等の情報**: 紙で収集していた全項目をLINEで収集する
 
-### 1.5 v2.0 での主な追加・変更
-| 項目 | v1.0 | v2.0 |
+### 1.6 v3.0 での主な追加・変更
+| 項目 | v2.0 | v3.0 |
 |------|------|------|
-| 保護者の入力手段 | LINE（設計のみ） | LINE（設計詳細化、紙対比追加） |
-| 紙予定表との対比 | なし | セクション11で完全対比 |
-| breakfast_flag | 未考慮 | 設計に組み込み（DB拡張候補） |
-| 運用フロー | 概要のみ | 月次サイクル完全定義 |
-| 既存システム統合 | 概要のみ | schedule_plans統合詳細 |
-| 会話状態マシン | 8状態 | 10状態（AUTH_LINK, MODIFY, CANCEL_REQUEST追加） |
+| 適用範囲 | あゆっこ1施設 | **全30施設** (マルチテナント) |
+| 保護者の入力手段 | LINEのみ | **LINE + Webポータル** (2チャネル) |
+| LINE構成 | 1公式アカウント | **施設ごとに1アカウント** |
+| 認証 | なし | **JWT + ロールモデル** (super_admin/nursery_admin/staff/parent) |
+| Webhook設計 | 単一エンドポイント | **施設コードパラメータで振分** |
+| 連携コード | AYK-XXXX固定 | **{施設コード}-XXXX** (施設別) |
+| 施設別設定 | なし | **nursery_settings** テーブルで柔軟設定 |
+| 保護者明細 | 未設計 | **PDF閲覧 + LINE通知** (あゆっこのみ) |
+| 関連ドキュメント | 単体 | **MULTI_FACILITY_DESIGN.md** と連携 |
 
 ---
 
@@ -1737,6 +1750,237 @@ LINE公式アカウント開設──►              │                    ├
 
 ---
 
+## 21. マルチ施設対応拡張 (v3.0)
+
+> 詳細は [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md) を参照
+
+### 21.1 LINE公式アカウント戦略
+
+**方式: 1施設1アカウント（推奨）**
+
+| 項目 | v2.0 | v3.0 |
+|------|------|------|
+| アカウント数 | 1 (あゆっこ) | 施設ごとに1 (最大30) |
+| Webhook URL | `/api/line/webhook` | `/api/line/webhook?nursery={code}` |
+| Channel Secret | 1つ (env変数) | 施設ごとにDB暗号化保存 |
+| 連携コード形式 | `AYK-XXXX` | `{施設コード}-XXXX` |
+
+### 21.2 Webhook 施設振り分け
+
+```
+全施設の LINE Webhook URL (共通バックエンド):
+
+  https://{domain}/api/line/webhook?nursery=AYK    → あゆっこ
+  https://{domain}/api/line/webhook?nursery=FAC002  → 施設B
+  https://{domain}/api/line/webhook?nursery=FAC003  → 施設C
+  ...
+
+処理フロー:
+  1. nursery パラメータから施設特定
+  2. nursery_settings から LINE Channel Secret を復号
+  3. 施設ごとのSecretで署名検証
+  4. 以降の処理は nursery_id スコープで実行
+```
+
+### 21.3 施設別LINE設定 (nursery_settings)
+
+```json
+{
+  "nursery_id": "facility_xxx",
+  "setting_key": "line_config",
+  "setting_value": {
+    "channel_id": "1234567890",
+    "channel_secret": "encrypted:xxxxxxx",
+    "channel_access_token": "encrypted:xxxxxxx",
+    "webhook_url": "/api/line/webhook?nursery=XXX",
+    "welcome_message": "○○保育所へようこそ！",
+    "nursery_display_name": "○○保育所"
+  }
+}
+```
+
+### 21.4 会話テーブルのテナント分離
+
+```sql
+-- line_conversations に nursery_id を追加
+-- v3.0: テナント分離のため
+ALTER TABLE line_conversations ADD COLUMN nursery_id TEXT REFERENCES nurseries(id);
+
+-- line_accounts にも nursery_id を追加
+-- v3.0: 同一LINE userId が異なる施設に連携する場合を想定
+ALTER TABLE line_accounts ADD COLUMN nursery_id TEXT REFERENCES nurseries(id);
+
+-- UNIQUE制約の変更:
+-- v2.0: UNIQUE(line_user_id, child_id)
+-- v3.0: UNIQUE(line_user_id, child_id, nursery_id)
+-- → 異なる施設で同じ保護者が兄弟を登録できる
+```
+
+### 21.5 リマインド送信のスコープ
+
+```
+v2.0: 全LINE連携ユーザーに一斉送信
+v3.0: nursery_id ごとにスコープした送信
+
+Cron Trigger (15日/25日):
+  FOR EACH nursery IN active_nurseries:
+    lineConfig = nursery_settings WHERE nursery_id = nursery.id
+    未提出者 = SELECT ... WHERE nursery_id = nursery.id AND 未提出
+    FOR EACH parent IN 未提出者:
+      PUSH MESSAGE using lineConfig.channel_access_token
+```
+
+### 21.6 コスト影響
+
+```
+30施設でのLINEコスト:
+  Reply Message: 無料 (大半の応答)
+  Push Message: リマインド 30名 x 2回 x 30施設 = 1,800通/月
+
+  各施設のプラン判断:
+    ~200通/月: フリープラン → 0円
+    ~500通/月: ライトプラン → 5,000円
+
+  現実的見積: 大半がフリープランで運用可能
+    → 月額 ~5,000円 (ライト5施設程度)
+```
+
+---
+
+## 22. 保護者Webポータル設計 (v3.0)
+
+> LINE非利用者向けの代替手段。要件①の補助チャネル。
+
+### 22.1 概要
+
+```
+入力チャネルの優先度:
+  1. LINE (メイン) → AIヒアリング、プッシュ通知
+  2. Webポータル (サブ) → カレンダーUI、LINE不要
+  3. スタッフ代行入力 (バックアップ) → 既存実装
+```
+
+### 22.2 URL構成
+
+```
+https://{domain}/parent/login          -- ログイン
+https://{domain}/parent/schedule       -- 予定入力 (メイン)
+https://{domain}/parent/schedule/edit  -- 予定修正
+https://{domain}/parent/statement      -- 利用明細閲覧 (⑤ あゆっこのみ)
+https://{domain}/parent/profile        -- プロフィール確認
+```
+
+### 22.3 ログイン方式
+
+```
+方式A: LINE Login (LIFF) ← 推奨
+  LINE友だち追加 → LIFFアプリ起動 → LINE userId で自動認証
+  → 追加の認証不要
+
+方式B: 連携コード + パスワード
+  初回: 施設から配布された連携コード + パスワード設定
+  2回目以降: メアド + パスワード
+  → LINE非利用者向け
+
+方式C: マジックリンク (Email/SMS)
+  メアド or 電話番号入力 → 一時リンク送信 → クリックでログイン
+  → パスワード不要で安全
+```
+
+### 22.4 予定入力UI (モバイル最適化)
+
+```
+ステップ1: 基本パターン設定
+  利用曜日チェック: [月][火][水][木][金][土][日]
+  登園時刻: [08:30 ▼]
+  降園時刻: [17:00 ▼]
+  食事: [✓昼食] [✓AMおやつ] [✓PMおやつ] [ 夕食]
+  [パターンを全日に適用]
+
+ステップ2: カレンダーで例外日を設定
+  タップで日付選択 → 休み/時間変更/食事変更
+  祝日はグレーアウトで自動表示
+
+ステップ3: プレビュー + 確認
+  全日程の一覧表示
+  [提出する] ボタン
+
+→ schedule_plans テーブルに保存 (source_file = 'WEB')
+```
+
+### 22.5 保護者向け利用明細閲覧 (要件⑤)
+
+```
+あゆっこのみの機能:
+  /parent/statement?year=2026&month=4
+
+  1. JWT認証 → 自分の子のみ表示
+  2. charge_lines → PDF生成 (jsPDF)
+  3. R2にキャッシュ (nursery_id/year/month/child_id.pdf)
+  4. ブラウザでPDF表示 (印刷可)
+
+LINE連携:
+  月初に Push Message:
+  "4月分の利用明細が確認できます → [明細を見る]"
+  → LIFF or Webリンクで /parent/statement へ
+```
+
+---
+
+## 23. v2.0 → v3.0 設計差分
+
+### 23.1 ドキュメント構造の変更
+
+| 変更 | v2.0 | v3.0 | 理由 |
+|------|------|------|------|
+| 適用範囲 | あゆっこ1施設 | 全30施設 | 木村さん3/4ヒアリング |
+| 入力チャネル | LINEのみ | LINE + Webポータル | LINE非利用者対応 |
+| セクション追加 | - | 21: マルチ施設拡張 | 30施設展開の設計 |
+| セクション追加 | - | 22: Webポータル設計 | サブチャネル設計 |
+| セクション追加 | - | 23: v2→v3差分 | 変更追跡 |
+| 関連ドキュメント | 単体 | MULTI_FACILITY_DESIGN.md連携 | 設計書群の構造化 |
+
+### 23.2 設計判断の変更
+
+| 判断 | v2.0 | v3.0 | 理由 |
+|------|------|------|------|
+| LINEアカウント | 1公式アカウント | 施設ごとに1アカウント | テナント分離 |
+| Webhook設計 | 単一エンドポイント | nurseryパラメータ振分 | マルチ施設対応 |
+| 連携コード | AYK-XXXX固定 | {施設コード}-XXXX | 施設間の衝突回避 |
+| Channel Secret | 環境変数1つ | nursery_settingsにDB暗号化保存 | 30施設分の管理 |
+| 認証 | なし | JWT + 4ロール | セキュリティ強化 |
+| source_file | 'LINE', 'LINE_修正' | 'LINE', 'LINE_修正', 'WEB' 追加 | Webポータル対応 |
+
+### 23.3 DBスキーマの変更 (v3.0追加分)
+
+```sql
+-- v3.0: LINE関連テーブルにnursery_id追加
+ALTER TABLE line_accounts ADD COLUMN nursery_id TEXT REFERENCES nurseries(id);
+ALTER TABLE line_conversations ADD COLUMN nursery_id TEXT REFERENCES nurseries(id);
+
+-- v3.0: ユーザー/セッション/設定テーブル
+-- → migrations/0003_multi_facility.sql で定義
+-- 詳細は MULTI_FACILITY_DESIGN.md セクション10を参照
+```
+
+### 23.4 v3.0 の残課題 (v2.0からの引き継ぎ含む)
+
+| # | 課題 | 由来 | 期限 |
+|---|------|------|------|
+| 1 | LINE公式アカウントの開設とMessaging API有効化 | v2.0 | 実装前 |
+| 2 | OpenAI APIキーの準備 | v2.0 | 実装前 |
+| 3 | breakfast_flag の要否を最終確認 | v2.0 | 設計レビュー時 |
+| 4 | 紙予定表のおやつ(1列) → am/pm(2列) の運用ルール確認 | v2.0 | 設計レビュー時 |
+| 5 | 緊急キャンセル時のDB処理方法 (DELETE vs NULL化) | v2.0 | 実装前 |
+| 6 | seed.sql の延長/夜間時間帯不整合の修正 | v2.0 | LINE実装前 |
+| 7 | **30施設のLINE公式アカウント開設計画** | v3.0 | Phase 2前 |
+| 8 | **施設別料金ルール (pricing_rules) の収集** | v3.0 | Phase 2前 |
+| 9 | **保護者Webポータルのログイン方式確定** | v3.0 | Phase 2前 |
+| 10 | **JWT暗号化キーの管理方式確定** | v3.0 | Phase 1前 |
+| 11 | **LINE Channel Secretの暗号化方式確定** | v3.0 | Phase 2前 |
+
+---
+
 ## 付録A: Flex Messageテンプレート例
 
 ### A.1 児童選択ボタン
@@ -1903,8 +2147,10 @@ LINE公式アカウント開設──►              │                    ├
 |-----------|------|------|
 | 1.0 | 2026-03-04 | 初版作成 |
 | 2.0 | 2026-03-04 | v2.0: テーブル名変更(line_prefix追加)、状態マシン10状態化、紙予定表対比、breakfast_flag対応方針、既存システム統合設計、運用フロー詳細化、schedule_change_requestsテーブル追加、設計差分セクション追加 |
+| 3.0 | 2026-03-04 | v3.0: マルチ施設対応(30施設展開)、保護者Webポータル設計、施設別LINEアカウント戦略、Webhook施設振分設計、JWT認証+ロールモデル導入、nursery_id テナント分離、MULTI_FACILITY_DESIGN.md連携 |
 
 ---
 
 *この文書は設計計画のみです。実装コードは含まれていません。*
 *実装着手前に、LINE公式アカウントの開設とOpenAI APIキーの準備が必要です。*
+*マルチ施設対応の詳細は [MULTI_FACILITY_DESIGN.md](./MULTI_FACILITY_DESIGN.md) を参照。*
