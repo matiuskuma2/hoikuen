@@ -3,6 +3,8 @@
 export type Bindings = {
   DB: D1Database;
   R2: R2Bucket;
+  LINE_CHANNEL_SECRET: string;
+  LINE_CHANNEL_ACCESS_TOKEN: string;
 };
 
 export type HonoEnv = {

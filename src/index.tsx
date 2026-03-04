@@ -13,6 +13,7 @@ import jobRoutes from './routes/jobs';
 import childRoutes from './routes/children';
 import templateRoutes from './routes/templates';
 import scheduleRoutes from './routes/schedules';
+import lineRoutes from './routes/line';
 
 const app = new Hono<HonoEnv>();
 
@@ -84,6 +85,7 @@ app.route('/api/jobs', jobRoutes);
 app.route('/api/children', childRoutes);
 app.route('/api/templates', templateRoutes);
 app.route('/api/schedules', scheduleRoutes);
+app.route('/api/line', lineRoutes);
 
 // Main UI HTML
 function mainPage(): string {
