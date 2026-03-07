@@ -674,4 +674,150 @@ async function handleStatus(
   await replyMessage(replyToken, [{ type: 'text', text: status }], token);
 }
 
+// ============================================================
+// 管理画面用 API
+// ============================================================
+
+/**
+ * GET /link-codes — 連携コード一覧（園児紐付け情報付き）
+ */
+lineRoutes.get('/link-codes', async (c) => {
+  const db = c.env.DB;
+  const results = await db
+    .prepare(
+      `SELECT lc.id, lc.code, lc.nursery_id, lc.expires_at, lc.used_by_line_account_id, lc.used_at,
+              la.line_user_id, la.display_name
+       FROM link_codes lc
+       LEFT JOIN line_accounts la ON la.id = lc.used_by_line_account_id
+       ORDER BY lc.created_at DESC`,
+    )
+    .all();
+  return c.json({ codes: results.results });
+});
+
+/**
+ * POST /link-codes — 連携コード新規発行
+ * Body: { child_ids?: string[] }  (将来的に特定園児に紐づけ)
+ */
+lineRoutes.post('/link-codes', async (c) => {
+  const db = c.env.DB;
+  // ランダム4桁コード生成
+  const num = Math.floor(1000 + Math.random() * 9000);
+  const code = `AYK-${num}`;
+  const id = `lc_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  // 有効期限: 90日
+  const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+
+  await db
+    .prepare(
+      `INSERT INTO link_codes (id, code, nursery_id, expires_at, created_at)
+       VALUES (?, ?, 'ayukko_001', ?, datetime('now'))`,
+    )
+    .bind(id, code, expiresAt)
+    .run();
+
+  return c.json({ id, code, expires_at: expiresAt });
+});
+
+/**
+ * GET /submission-status?year=YYYY&month=MM — 月次提出状況一覧
+ * 園児ごとに LINE連携済み / 予定提出済み / 提出日数 を返す
+ */
+lineRoutes.get('/submission-status', async (c) => {
+  const db = c.env.DB;
+  const year = parseInt(c.req.query('year') ?? String(new Date().getFullYear()));
+  const month = parseInt(c.req.query('month') ?? String(new Date().getMonth() + 2));
+
+  // 全園児を取得
+  const children = await db
+    .prepare('SELECT id, name, enrollment_type FROM children WHERE withdrawn_at IS NULL ORDER BY name')
+    .all<{ id: string; name: string; enrollment_type: string }>();
+
+  // LINE連携状況（line_account_children 経由）
+  const lineLinks = await db
+    .prepare(
+      `SELECT c.id as child_id, la.line_user_id, la.display_name, conv.state as conv_state
+       FROM children c
+       LEFT JOIN line_account_children lac ON lac.child_id = c.id
+       LEFT JOIN line_accounts la ON la.id = lac.line_account_id AND la.unlinked_at IS NULL
+       LEFT JOIN conversations conv ON conv.line_user_id = la.line_user_id
+       WHERE c.withdrawn_at IS NULL`,
+    )
+    .all<{ child_id: string; line_user_id: string | null; display_name: string | null; conv_state: string | null }>();
+
+  // 予定提出状況（schedule_plans でLINEソース）
+  const schedules = await db
+    .prepare(
+      `SELECT child_id, COUNT(*) as day_count, source_file
+       FROM schedule_plans
+       WHERE year = ? AND month = ?
+       GROUP BY child_id, source_file`,
+    )
+    .bind(year, month)
+    .all<{ child_id: string; day_count: number; source_file: string }>();
+
+  // 全予定（ソース不問）
+  const allSchedules = await db
+    .prepare(
+      `SELECT child_id, COUNT(*) as day_count
+       FROM schedule_plans
+       WHERE year = ? AND month = ?
+       GROUP BY child_id`,
+    )
+    .bind(year, month)
+    .all<{ child_id: string; day_count: number }>();
+
+  // 組み立て
+  const linkMap = new Map<string, { line_user_id: string | null; display_name: string | null; conv_state: string | null }>();
+  for (const r of lineLinks.results) {
+    linkMap.set(r.child_id, r);
+  }
+  const schedMap = new Map<string, { line_days: number; other_days: number }>();
+  for (const r of schedules.results) {
+    const existing = schedMap.get(r.child_id) ?? { line_days: 0, other_days: 0 };
+    if (r.source_file === 'LINE') {
+      existing.line_days = r.day_count;
+    } else {
+      existing.other_days += r.day_count;
+    }
+    schedMap.set(r.child_id, existing);
+  }
+  const allSchedMap = new Map<string, number>();
+  for (const r of allSchedules.results) {
+    allSchedMap.set(r.child_id, r.day_count);
+  }
+
+  const status = children.results.map((child) => {
+    const link = linkMap.get(child.id);
+    const sched = schedMap.get(child.id);
+    const totalDays = allSchedMap.get(child.id) ?? 0;
+    return {
+      child_id: child.id,
+      child_name: child.name,
+      enrollment_type: child.enrollment_type,
+      line_linked: !!link?.line_user_id,
+      line_display_name: link?.display_name ?? null,
+      conv_state: link?.conv_state ?? null,
+      line_submitted_days: sched?.line_days ?? 0,
+      other_submitted_days: sched?.other_days ?? 0,
+      total_submitted_days: totalDays,
+      has_submission: totalDays > 0,
+    };
+  });
+
+  const totalChildren = status.length;
+  const linkedCount = status.filter((s) => s.line_linked).length;
+  const submittedCount = status.filter((s) => s.has_submission).length;
+
+  return c.json({
+    year,
+    month,
+    total_children: totalChildren,
+    line_linked_count: linkedCount,
+    submitted_count: submittedCount,
+    not_submitted_count: totalChildren - submittedCount,
+    children: status,
+  });
+});
+
 export default lineRoutes;

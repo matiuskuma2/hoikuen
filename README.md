@@ -1,6 +1,6 @@
 # あゆっこ保育所 業務自動化システム
 
-> **Version**: 8.0 — LINE Phase 1 MVP 実機テスト完了 (2026-03-07)
+> **Version**: 8.1 — LINE管理画面追加 (2026-03-07)
 > **GitHub**: https://github.com/matiuskuma2/hoikuen
 
 ---
@@ -146,6 +146,9 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 |--------|------|------|
 | POST | `/api/line/webhook` | LINE Webhookエンドポイント |
 | GET | `/api/line/health` | LINE連携ステータス |
+| GET | `/api/line/link-codes` | 連携コード一覧 |
+| POST | `/api/line/link-codes` | 連携コード新規発行 |
+| GET | `/api/line/submission-status` | 月次提出状況（?year=&month=） |
 
 ### ジョブ・テンプレート
 | Method | Path | 説明 |
@@ -188,6 +191,11 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
   - 友だち追加 → 連携コード検証 → 園児紐づけ
   - 月選択 → 予定入力（固定フォーマット・範囲指定対応）
   - 確認 → 確定 → schedule_plans UPSERT保存
+- **LINE管理画面** (v8.1)
+  - 🟢 友だち追加QRコード＆リンク表示
+  - 🟢 連携コード発行・一覧表示（使用状況・有効期限・使用者）
+  - 🟢 月次提出状況（全園児のLINE連携/提出済み/未提出を一覧表示）
+  - 🟢 提出状況サマリー（園児数・連携済・提出済・未提出のカウント）
 - Cloudflare Production / Staging 環境構築
 - D1 マイグレーション + seed データ投入
 
@@ -197,7 +205,6 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 
 ### 🔨 Phase 2（次フェーズ）
 - 前日17時以降の変更リクエスト処理
-- 園側管理画面（連携コード発行・変更リクエスト確認）
 - 複数園児対応（SELECT_CHILD状態の追加）
 - 園スタッフへの通知機能
 - LLMによる自然言語→構造化変換
@@ -220,6 +227,7 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 
 | 日付 | 内容 |
 |------|------|
+| 2026-03-07 | **v8.1**: LINE管理画面（友だち追加リンク・連携コード発行・提出状況一覧）追加 |
 | 2026-03-07 | **v8.0**: Production/Staging環境構築、LINE実機テスト完了 |
 | 2026-03-06 | **v7.0**: LINE Phase 1 MVP実装 — 会話状態機械・予定入力・UPSERT保存 |
 | 2026-03-06 | docs: 設計ドキュメント3件追加、README+SETUP.md作成 |

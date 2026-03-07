@@ -57,6 +57,7 @@ const VIEWS = Object.freeze({
 const TABS = Object.freeze({
   DASHBOARD: 'dashboard',
   CHILDREN: 'children',
+  LINE_MANAGE: 'line-manage',
   SCHEDULE_INPUT: 'schedule-input',
   UPLOAD: 'upload',
   GENERATE: 'generate',
@@ -144,7 +145,7 @@ const state = {
 
 function switchTab(tab) {
   state.activeTab = tab;
-  const tabs = ['dashboard', 'children', 'schedule-input', 'upload', 'generate'];
+  const tabs = ['dashboard', 'children', 'line-manage', 'schedule-input', 'upload', 'generate'];
   tabs.forEach(t => {
     const panel = document.getElementById(`panel-${t}`);
     const tabBtn = document.getElementById(`tab-${t}`);
@@ -169,6 +170,11 @@ function switchTab(tab) {
   // Load children when switching to children tab
   if (tab === 'children') {
     loadChildren();
+  }
+
+  // Initialize LINE management tab
+  if (tab === 'line-manage') {
+    initLineManageTab();
   }
 
   // Initialize schedule input when switching to that tab
@@ -2464,6 +2470,271 @@ function _shortTime(timeStr) {
   const m = s.match(/^0?(\d{1,2}):(\d{2})/);
   if (m) return `${parseInt(m[1])}:${m[2]}`;
   return s;
+}
+
+// ═══════════════════════════════════════════
+// LINE MANAGEMENT (LINE予定収集)
+// ═══════════════════════════════════════════
+
+let lineManageInitialized = false;
+
+function initLineManageTab() {
+  // Initialize year/month selectors for submission status
+  const now = new Date();
+  const yearSel = document.getElementById('line-status-year');
+  const monthSel = document.getElementById('line-status-month');
+
+  if (yearSel && yearSel.options.length === 0) {
+    const currentYear = now.getFullYear();
+    for (let y = currentYear - 1; y <= currentYear + 1; y++) {
+      const opt = document.createElement('option');
+      opt.value = y;
+      opt.textContent = `${y}年`;
+      if (y === currentYear) opt.selected = true;
+      yearSel.appendChild(opt);
+    }
+  }
+
+  // Default to next month
+  if (monthSel) {
+    const nextMonth = now.getMonth() + 2; // 0-based + 1 for display + 1 for next
+    const targetMonth = nextMonth > 12 ? 1 : nextMonth;
+    monthSel.value = String(targetMonth);
+    // If next month is January, bump year
+    if (nextMonth > 12 && yearSel) {
+      yearSel.value = String(now.getFullYear() + 1);
+    }
+  }
+
+  if (!lineManageInitialized) {
+    lineManageInitialized = true;
+    // Auto-load data on first tab visit
+    loadSubmissionStatus();
+    loadLinkCodes();
+  }
+}
+
+/**
+ * Load submission status for the selected year/month
+ */
+async function loadSubmissionStatus() {
+  const yearSel = document.getElementById('line-status-year');
+  const monthSel = document.getElementById('line-status-month');
+  const year = yearSel ? parseInt(yearSel.value) : new Date().getFullYear();
+  const month = monthSel ? parseInt(monthSel.value) : new Date().getMonth() + 2;
+
+  const tbody = document.getElementById('submission-table-body');
+  if (tbody) {
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>';
+  }
+
+  try {
+    const res = await fetch(`/api/line/submission-status?year=${year}&month=${month}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    // Update summary stats
+    document.getElementById('stat-total').textContent = data.total_children ?? '-';
+    document.getElementById('stat-linked').textContent = data.line_linked_count ?? '-';
+    document.getElementById('stat-submitted').textContent = data.submitted_count ?? '-';
+    document.getElementById('stat-not-submitted').textContent = data.not_submitted_count ?? '-';
+
+    // Render table
+    const children = data.children || [];
+    if (children.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400"><i class="fas fa-child mr-1"></i>園児が登録されていません</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = children.map(ch => {
+      const enrollBadge = ch.enrollment_type === '月極'
+        ? '<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-xs">月極</span>'
+        : '<span class="bg-orange-100 text-orange-700 px-2 py-0.5 rounded text-xs">一時</span>';
+
+      let linkedBadge;
+      if (ch.line_linked) {
+        linkedBadge = '<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-xs"><i class="fas fa-check mr-0.5"></i>連携済</span>';
+      } else {
+        linkedBadge = '<span class="bg-gray-100 text-gray-500 px-2 py-0.5 rounded text-xs">未連携</span>';
+      }
+
+      const lineNameStr = ch.line_display_name
+        ? `<span class="text-gray-700 text-xs">${escapeHtml(ch.line_display_name)}</span>`
+        : '<span class="text-gray-300 text-xs">-</span>';
+
+      let statusBadge;
+      if (ch.has_submission) {
+        statusBadge = `<span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs"><i class="fas fa-check-circle mr-0.5"></i>提出済</span>`;
+      } else {
+        statusBadge = `<span class="bg-red-50 text-red-500 px-2 py-0.5 rounded text-xs"><i class="fas fa-times-circle mr-0.5"></i>未提出</span>`;
+      }
+
+      const dayCountStr = ch.total_submitted_days > 0
+        ? `<span class="font-medium text-blue-700">${ch.total_submitted_days}日</span>` +
+          (ch.line_submitted_days > 0 ? ` <span class="text-[10px] text-green-500">(LINE: ${ch.line_submitted_days})</span>` : '')
+        : '<span class="text-gray-300">-</span>';
+
+      // Find matching link code (unused) for this child — we'll just show a "-" for now
+      // The link code column will be managed from the link codes section
+      const codeStr = '<span class="text-gray-300 text-xs">-</span>';
+
+      return `<tr class="border-t border-gray-100 hover:bg-gray-50">
+        <td class="px-3 py-2 font-medium text-gray-800">${escapeHtml(ch.child_name)}</td>
+        <td class="px-3 py-2 text-center">${enrollBadge}</td>
+        <td class="px-3 py-2 text-center">${linkedBadge}</td>
+        <td class="px-3 py-2 text-center">${lineNameStr}</td>
+        <td class="px-3 py-2 text-center">${statusBadge}</td>
+        <td class="px-3 py-2 text-center text-sm">${dayCountStr}</td>
+        <td class="px-3 py-2 text-center">${codeStr}</td>
+      </tr>`;
+    }).join('');
+
+  } catch (e) {
+    console.error('[LINE] Submission status load error:', e);
+    if (tbody) {
+      tbody.innerHTML = '<tr><td colspan="7" class="text-center py-6 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>読み込みエラー</td></tr>';
+    }
+    // Clear stats
+    document.getElementById('stat-total').textContent = '-';
+    document.getElementById('stat-linked').textContent = '-';
+    document.getElementById('stat-submitted').textContent = '-';
+    document.getElementById('stat-not-submitted').textContent = '-';
+  }
+}
+
+/**
+ * Load link codes table
+ */
+async function loadLinkCodes() {
+  const tbody = document.getElementById('link-codes-table-body');
+  if (!tbody) return;
+
+  tbody.innerHTML = '<tr><td colspan="4" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>';
+
+  try {
+    const res = await fetch('/api/line/link-codes');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const codes = data.codes || [];
+
+    if (codes.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-center py-6 text-gray-400"><i class="fas fa-key mr-1"></i>連携コードはまだ発行されていません</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = codes.map(code => {
+      const isUsed = !!code.used_by_line_account_id;
+      const codeDisplay = `<span class="font-mono font-bold ${isUsed ? 'text-gray-400' : 'text-amber-700'}">${escapeHtml(code.code)}</span>`;
+
+      let statusBadge;
+      if (isUsed) {
+        statusBadge = '<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-xs"><i class="fas fa-check mr-0.5"></i>使用済</span>';
+      } else {
+        const expires = code.expires_at ? new Date(code.expires_at) : null;
+        const isExpired = expires && expires < new Date();
+        if (isExpired) {
+          statusBadge = '<span class="bg-red-100 text-red-600 px-2 py-0.5 rounded text-xs"><i class="fas fa-clock mr-0.5"></i>期限切れ</span>';
+        } else {
+          statusBadge = '<span class="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs"><i class="fas fa-hourglass-half mr-0.5"></i>未使用</span>';
+        }
+      }
+
+      const usedByStr = isUsed && code.display_name
+        ? `<span class="text-gray-700 text-xs">${escapeHtml(code.display_name)}</span>`
+        : '<span class="text-gray-300 text-xs">-</span>';
+
+      const expiresStr = code.expires_at
+        ? `<span class="text-xs text-gray-500">${new Date(code.expires_at).toLocaleDateString('ja-JP')}</span>`
+        : '<span class="text-gray-300 text-xs">-</span>';
+
+      return `<tr class="border-t border-gray-100 hover:bg-gray-50">
+        <td class="px-3 py-2">${codeDisplay}</td>
+        <td class="px-3 py-2 text-center">${statusBadge}</td>
+        <td class="px-3 py-2 text-center">${usedByStr}</td>
+        <td class="px-3 py-2 text-center">${expiresStr}</td>
+      </tr>`;
+    }).join('');
+
+  } catch (e) {
+    console.error('[LINE] Link codes load error:', e);
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center py-6 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>読み込みエラー</td></tr>';
+  }
+}
+
+/**
+ * Generate a new link code
+ */
+async function generateLinkCode() {
+  try {
+    const res = await fetch('/api/line/link-codes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert('コード発行エラー: ' + (err.error || '不明なエラー'));
+      return;
+    }
+
+    const data = await res.json();
+    // Show success notification
+    const notification = document.createElement('div');
+    notification.className = 'fixed top-4 right-4 z-50 bg-green-600 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium flex items-center gap-2';
+    notification.innerHTML = `<i class="fas fa-check-circle"></i>コード <span class="font-mono font-bold">${escapeHtml(data.code)}</span> を発行しました`;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 3000);
+
+    // Reload link codes table
+    loadLinkCodes();
+  } catch (e) {
+    alert('コード発行に失敗しました: ' + e.message);
+  }
+}
+
+/**
+ * Copy text from an input element to clipboard
+ */
+function copyToClipboard(inputId) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+
+  const text = input.value || input.textContent;
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showCopyFeedback(input);
+    }).catch(() => {
+      fallbackCopy(input);
+    });
+  } else {
+    fallbackCopy(input);
+  }
+}
+
+function fallbackCopy(input) {
+  input.select();
+  input.setSelectionRange(0, 99999);
+  try {
+    document.execCommand('copy');
+    showCopyFeedback(input);
+  } catch (e) {
+    alert('コピーに失敗しました。手動でコピーしてください。');
+  }
+}
+
+function showCopyFeedback(element) {
+  const btn = element.nextElementSibling;
+  if (btn && btn.tagName === 'BUTTON') {
+    const origHTML = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-check text-green-600"></i>';
+    btn.classList.add('bg-green-100');
+    setTimeout(() => {
+      btn.innerHTML = origHTML;
+      btn.classList.remove('bg-green-100');
+    }, 1500);
+  }
 }
 
 // ═══════════════════════════════════════════

@@ -152,6 +152,9 @@ function mainPage(): string {
       <button onclick="switchTab('children')" id="tab-children" class="pb-2 text-sm tab-inactive">
         <i class="fas fa-child mr-1"></i>園児管理
       </button>
+      <button onclick="switchTab('line-manage')" id="tab-line-manage" class="pb-2 text-sm tab-inactive">
+        <i class="fab fa-line mr-1" style="color:#06C755"></i>LINE予定収集
+      </button>
       <button onclick="switchTab('schedule-input')" id="tab-schedule-input" class="pb-2 text-sm tab-inactive">
         <i class="fas fa-edit mr-1"></i>予定入力
       </button>
@@ -505,6 +508,177 @@ function mainPage(): string {
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- TAB: LINE予定収集                           -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div id="panel-line-manage" class="hidden">
+
+      <!-- LINE友だち追加セクション -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+        <div class="px-5 py-4 border-b border-gray-100">
+          <h2 class="text-base font-semibold text-gray-800 flex items-center gap-2">
+            <span class="w-7 h-7 rounded-full flex items-center justify-center text-sm" style="background:#06C755">
+              <i class="fab fa-line text-white"></i>
+            </span>
+            LINE予定収集 — 保護者にLINEで予定を提出してもらう
+          </h2>
+        </div>
+        <div class="p-5">
+          <!-- Step説明 -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div class="bg-green-50 rounded-lg px-4 py-3 border border-green-200">
+              <div class="text-xs font-bold text-green-800 mb-1">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-600 text-white text-[10px] mr-1">1</span>
+                保護者にLINE友だち追加してもらう
+              </div>
+              <div class="text-xs text-green-600">下のQRコード or リンクを保護者へ共有</div>
+            </div>
+            <div class="bg-blue-50 rounded-lg px-4 py-3 border border-blue-200">
+              <div class="text-xs font-bold text-blue-800 mb-1">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] mr-1">2</span>
+                連携コードを渡す
+              </div>
+              <div class="text-xs text-blue-600">園児ごとに発行したコードを保護者へ通知</div>
+            </div>
+            <div class="bg-purple-50 rounded-lg px-4 py-3 border border-purple-200">
+              <div class="text-xs font-bold text-purple-800 mb-1">
+                <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-purple-600 text-white text-[10px] mr-1">3</span>
+                保護者がLINEで予定入力
+              </div>
+              <div class="text-xs text-purple-600">「予定入力」→月→日時→確定で自動保存</div>
+            </div>
+          </div>
+
+          <!-- QRコード & リンク -->
+          <div class="bg-gray-50 rounded-xl p-5 border border-gray-200 mb-6">
+            <h3 class="text-sm font-bold text-gray-800 mb-3">
+              <i class="fab fa-line mr-1" style="color:#06C755"></i>友だち追加リンク（保護者に共有）
+            </h3>
+            <div class="flex flex-col md:flex-row items-center gap-6">
+              <div class="text-center">
+                <img src="https://qr-official.line.me/gs/M_591xcqds_GW.png" alt="LINE QRコード" class="w-36 h-36 rounded-lg border border-gray-200 shadow-sm">
+                <p class="text-xs text-gray-500 mt-2">QRコードで友だち追加</p>
+              </div>
+              <div class="flex-1">
+                <div class="mb-3">
+                  <label class="text-xs text-gray-600 font-medium">友だち追加URL:</label>
+                  <div class="flex items-center gap-2 mt-1">
+                    <input type="text" value="https://lin.ee/H02sZM5" readonly
+                           class="flex-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 font-mono" id="line-add-url">
+                    <button onclick="copyToClipboard('line-add-url')" class="bg-gray-200 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-300">
+                      <i class="fas fa-copy"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="bg-yellow-50 rounded-lg px-3 py-2 border border-yellow-200 text-xs text-yellow-700">
+                  <i class="fas fa-info-circle mr-1"></i>
+                  保護者に友だち追加してもらった後、連携コードを入力してもらいます。
+                  コードは下の「連携コード管理」から発行できます。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 月次提出状況 -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+        <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-gray-800 flex items-center gap-2">
+            <i class="fas fa-clipboard-check text-blue-500"></i>
+            月次予定 提出状況
+          </h3>
+          <div class="flex items-center gap-2">
+            <select id="line-status-year" class="border border-gray-300 rounded-lg px-2 py-1 text-xs">
+            </select>
+            <select id="line-status-month" class="border border-gray-300 rounded-lg px-2 py-1 text-xs">
+              <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
+              <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
+              <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
+              <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
+            </select>
+            <button onclick="loadSubmissionStatus()" class="bg-blue-600 text-white px-3 py-1 rounded-lg text-xs hover:bg-blue-700">
+              <i class="fas fa-sync-alt mr-1"></i>更新
+            </button>
+          </div>
+        </div>
+        <div class="p-4">
+          <!-- サマリーバー -->
+          <div id="submission-summary" class="flex gap-3 mb-4">
+            <div class="bg-gray-100 rounded-lg px-4 py-2 text-center flex-1">
+              <div class="text-lg font-bold text-gray-800" id="stat-total">-</div>
+              <div class="text-[10px] text-gray-500">園児数</div>
+            </div>
+            <div class="bg-green-50 rounded-lg px-4 py-2 text-center flex-1 border border-green-200">
+              <div class="text-lg font-bold text-green-700" id="stat-linked">-</div>
+              <div class="text-[10px] text-green-600">LINE連携済</div>
+            </div>
+            <div class="bg-blue-50 rounded-lg px-4 py-2 text-center flex-1 border border-blue-200">
+              <div class="text-lg font-bold text-blue-700" id="stat-submitted">-</div>
+              <div class="text-[10px] text-blue-600">提出済</div>
+            </div>
+            <div class="bg-red-50 rounded-lg px-4 py-2 text-center flex-1 border border-red-200">
+              <div class="text-lg font-bold text-red-600" id="stat-not-submitted">-</div>
+              <div class="text-[10px] text-red-500">未提出</div>
+            </div>
+          </div>
+          <!-- テーブル -->
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-gray-50 text-gray-600">
+                  <th class="px-3 py-2 text-left font-medium">園児名</th>
+                  <th class="px-3 py-2 text-center font-medium">区分</th>
+                  <th class="px-3 py-2 text-center font-medium">LINE連携</th>
+                  <th class="px-3 py-2 text-center font-medium">LINE名</th>
+                  <th class="px-3 py-2 text-center font-medium">提出状況</th>
+                  <th class="px-3 py-2 text-center font-medium">提出日数</th>
+                  <th class="px-3 py-2 text-center font-medium">連携コード</th>
+                </tr>
+              </thead>
+              <tbody id="submission-table-body">
+                <tr><td colspan="7" class="text-center py-8 text-gray-400">「更新」をクリックして読み込み</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 連携コード管理 -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+        <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-gray-800 flex items-center gap-2">
+            <i class="fas fa-key text-amber-500"></i>
+            連携コード管理
+          </h3>
+          <button onclick="generateLinkCode()" class="bg-amber-500 text-white px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-amber-600">
+            <i class="fas fa-plus mr-1"></i>新しいコードを発行
+          </button>
+        </div>
+        <div class="p-4">
+          <p class="text-xs text-gray-500 mb-3">
+            <i class="fas fa-info-circle text-blue-400 mr-1"></i>
+            発行したコードを保護者にお渡しください。保護者がLINEでコードを入力すると、園児と自動的に紐づけされます。
+          </p>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="bg-gray-50 text-gray-600">
+                  <th class="px-3 py-2 text-left font-medium">コード</th>
+                  <th class="px-3 py-2 text-center font-medium">使用状況</th>
+                  <th class="px-3 py-2 text-center font-medium">使用者</th>
+                  <th class="px-3 py-2 text-center font-medium">有効期限</th>
+                </tr>
+              </thead>
+              <tbody id="link-codes-table-body">
+                <tr><td colspan="4" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
