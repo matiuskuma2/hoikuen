@@ -310,6 +310,30 @@ scheduleRoutes.post('/dashboard', async (c) => {
     });
   }
 
+  // Build submission overview: which children have submitted and which have not
+  const childrenWithSchedules = new Set(schedules.map(s => s.child_id as string));
+  const submittedChildren: { id: string; name: string; enrollment_type: string; days: number }[] = [];
+  const notSubmittedChildren: { id: string; name: string; enrollment_type: string }[] = [];
+
+  for (const child of children) {
+    const cid = child.id as string;
+    if (childrenWithSchedules.has(cid)) {
+      const dayCount = schedules.filter(s => s.child_id === cid).length;
+      submittedChildren.push({
+        id: cid,
+        name: child.name as string,
+        enrollment_type: child.enrollment_type as string,
+        days: dayCount,
+      });
+    } else {
+      notSubmittedChildren.push({
+        id: cid,
+        name: child.name as string,
+        enrollment_type: child.enrollment_type as string,
+      });
+    }
+  }
+
   return c.json({
     year,
     month,
@@ -317,8 +341,90 @@ scheduleRoutes.post('/dashboard', async (c) => {
     total_children: children.length,
     is_schedule_only: true,
     daily_summary: dailySummary,
+    submission_overview: {
+      total: children.length,
+      submitted_count: submittedChildren.length,
+      not_submitted_count: notSubmittedChildren.length,
+      submitted: submittedChildren,
+      not_submitted: notSubmittedChildren,
+    },
     submission_report: null,
     source: 'database',
+  });
+});
+
+// ── Public view: calendar data for a specific child/month ──
+// GET /api/schedules/view/:childId/:year/:month
+// No auth required — for parents to view their own submitted schedule
+scheduleRoutes.get('/view/:childId/:year/:month', async (c) => {
+  const childId = c.req.param('childId');
+  const year = parseInt(c.req.param('year') || '0');
+  const month = parseInt(c.req.param('month') || '0');
+
+  if (!year || !month || month < 1 || month > 12) {
+    return c.json({ error: '無効な年月です' }, 400);
+  }
+
+  const db = c.env.DB;
+
+  // Get child info
+  const child = await db.prepare(
+    'SELECT id, name, enrollment_type, birth_date, age_class FROM children WHERE id = ?'
+  ).bind(childId).first<{ id: string; name: string; enrollment_type: string; birth_date: string | null; age_class: number | null }>();
+
+  if (!child) {
+    return c.json({ error: '園児が見つかりません' }, 404);
+  }
+
+  // Get schedule plans
+  const result = await db.prepare(`
+    SELECT day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file
+    FROM schedule_plans
+    WHERE child_id = ? AND year = ? AND month = ?
+    ORDER BY day ASC
+  `).bind(childId, year, month).all();
+
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const weekdayNames = ['日', '月', '火', '水', '木', '金', '土'];
+
+  // Build full month array (including days with no schedule)
+  const days: Record<string, unknown>[] = [];
+  const planMap = new Map<number, Record<string, unknown>>();
+  for (const r of result.results as Record<string, unknown>[]) {
+    planMap.set(r.day as number, r);
+  }
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month - 1, day);
+    const dow = date.getDay();
+    const plan = planMap.get(day);
+    days.push({
+      day,
+      weekday: weekdayNames[dow],
+      is_weekend: dow === 0 || dow === 6,
+      planned_start: plan?.planned_start ?? null,
+      planned_end: plan?.planned_end ?? null,
+      lunch_flag: plan?.lunch_flag ?? 0,
+      am_snack_flag: plan?.am_snack_flag ?? 0,
+      pm_snack_flag: plan?.pm_snack_flag ?? 0,
+      dinner_flag: plan?.dinner_flag ?? 0,
+      has_plan: !!plan,
+      source: plan?.source_file ?? null,
+    });
+  }
+
+  return c.json({
+    child: {
+      id: child.id,
+      name: child.name,
+      enrollment_type: child.enrollment_type,
+      age_class: child.age_class,
+    },
+    year,
+    month,
+    days_in_month: daysInMonth,
+    total_planned_days: result.results.length,
+    days,
   });
 });
 

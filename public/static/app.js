@@ -996,6 +996,67 @@ function renderDashboard(data) {
   // ── Alerts (submission issues) ──
   const alertsDiv = document.getElementById('dashboard-alerts');
   const subReport = data.submission_report;
+
+  // ── Submission Overview (from DB dashboard) ──
+  const subOverview = data.submission_overview;
+  if (subOverview && subOverview.total > 0) {
+    const notSub = subOverview.not_submitted || [];
+    const submitted = subOverview.submitted || [];
+    
+    // Always show submission overview bar
+    alertsHtml += `
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 px-4 py-3 mb-2">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-bold text-gray-700">
+            <i class="fas fa-clipboard-check text-blue-500 mr-1"></i>
+            ${data.year}年${data.month}月 提出状況
+          </h3>
+          <div class="flex gap-2">
+            <span class="bg-blue-100 text-blue-700 px-2.5 py-0.5 rounded-full text-xs font-medium">
+              <i class="fas fa-check-circle mr-0.5"></i>${subOverview.submitted_count}名 提出済
+            </span>
+            ${notSub.length > 0 ? `
+            <span class="bg-red-100 text-red-600 px-2.5 py-0.5 rounded-full text-xs font-medium">
+              <i class="fas fa-times-circle mr-0.5"></i>${notSub.length}名 未提出
+            </span>` : `
+            <span class="bg-green-100 text-green-700 px-2.5 py-0.5 rounded-full text-xs font-medium">
+              <i class="fas fa-check-double mr-0.5"></i>全員提出済
+            </span>`}
+          </div>
+        </div>
+        ${notSub.length > 0 ? `
+        <div class="bg-red-50 rounded-lg px-3 py-2 border border-red-200 mb-2">
+          <div class="text-xs font-bold text-red-700 mb-1">
+            <i class="fas fa-exclamation-triangle mr-0.5"></i>予定未提出の園児
+          </div>
+          <div class="flex flex-wrap gap-2">
+            ${notSub.map(c => `
+              <span class="bg-white text-red-700 px-2 py-1 rounded border border-red-200 text-xs flex items-center gap-1">
+                <i class="fas fa-child text-red-400"></i>
+                ${escapeHtml(c.name)}
+                <span class="text-[9px] text-red-400">${c.enrollment_type}</span>
+              </span>
+            `).join('')}
+          </div>
+        </div>` : ''}
+        ${submitted.length > 0 ? `
+        <details class="text-xs">
+          <summary class="text-gray-500 cursor-pointer hover:text-gray-700">
+            <i class="fas fa-check-circle text-blue-400 mr-0.5"></i>
+            提出済の園児 (${submitted.length}名) — クリックで展開
+          </summary>
+          <div class="flex flex-wrap gap-1.5 mt-2">
+            ${submitted.map(c => `
+              <span class="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-[10px] border border-blue-100">
+                ${escapeHtml(c.name)} <span class="text-blue-400">(${c.days}日)</span>
+              </span>
+            `).join('')}
+          </div>
+        </details>` : ''}
+      </div>
+    `;
+  }
+
   if (subReport && (subReport.not_submitted?.length > 0 || subReport.unmatched_schedules?.length > 0)) {
     const notSub = subReport.not_submitted || [];
     const unmatched = subReport.unmatched_schedules || [];
@@ -2525,7 +2586,7 @@ async function loadSubmissionStatus() {
 
   const tbody = document.getElementById('submission-table-body');
   if (tbody) {
-    tbody.innerHTML = '<tr><td colspan="7" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>';
   }
 
   try {
@@ -2542,7 +2603,7 @@ async function loadSubmissionStatus() {
     // Render table
     const children = data.children || [];
     if (children.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400"><i class="fas fa-child mr-1"></i>園児が登録されていません</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-gray-400"><i class="fas fa-child mr-1"></i>園児が登録されていません</td></tr>';
       return;
     }
 
@@ -2578,6 +2639,10 @@ async function loadSubmissionStatus() {
       // The link code column will be managed from the link codes section
       const codeStr = '<span class="text-gray-300 text-xs">-</span>';
 
+      // Calendar link
+      const calUrl = '/my/' + encodeURIComponent(ch.child_id);
+      const calLink = `<a href="${calUrl}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs" title="カレンダーを開く"><i class="fas fa-external-link-alt mr-0.5"></i>表示</a>`;
+
       return `<tr class="border-t border-gray-100 hover:bg-gray-50">
         <td class="px-3 py-2 font-medium text-gray-800">${escapeHtml(ch.child_name)}</td>
         <td class="px-3 py-2 text-center">${enrollBadge}</td>
@@ -2586,13 +2651,14 @@ async function loadSubmissionStatus() {
         <td class="px-3 py-2 text-center">${statusBadge}</td>
         <td class="px-3 py-2 text-center text-sm">${dayCountStr}</td>
         <td class="px-3 py-2 text-center">${codeStr}</td>
+        <td class="px-3 py-2 text-center">${calLink}</td>
       </tr>`;
     }).join('');
 
   } catch (e) {
     console.error('[LINE] Submission status load error:', e);
     if (tbody) {
-      tbody.innerHTML = '<tr><td colspan="7" class="text-center py-6 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>読み込みエラー</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="text-center py-6 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>読み込みエラー</td></tr>';
     }
     // Clear stats
     document.getElementById('stat-total').textContent = '-';

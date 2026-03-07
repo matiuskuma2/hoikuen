@@ -44,7 +44,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '6.0',
+    version: '8.2',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Dashboard + Generator (Direct Mode)',
     timestamp: new Date().toISOString(),
@@ -125,7 +125,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v6.0</p>
+          <p class="text-xs text-gray-500">業務自動化システム v8.2</p>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -638,10 +638,11 @@ function mainPage(): string {
                   <th class="px-3 py-2 text-center font-medium">提出状況</th>
                   <th class="px-3 py-2 text-center font-medium">提出日数</th>
                   <th class="px-3 py-2 text-center font-medium">連携コード</th>
+                  <th class="px-3 py-2 text-center font-medium">カレンダー</th>
                 </tr>
               </thead>
               <tbody id="submission-table-body">
-                <tr><td colspan="7" class="text-center py-8 text-gray-400">「更新」をクリックして読み込み</td></tr>
+                <tr><td colspan="8" class="text-center py-8 text-gray-400">「更新」をクリックして読み込み</td></tr>
               </tbody>
             </table>
           </div>
@@ -1224,5 +1225,280 @@ function mainPage(): string {
 app.get('/', (c) => {
   return c.html(mainPage());
 });
+
+// ═══════════════════════════════════════════
+// Parent-facing schedule calendar view
+// URL: /my/:childId  (defaults to current/next month)
+// URL: /my/:childId/:year/:month
+// ═══════════════════════════════════════════
+app.get('/my/:childId/:year?/:month?', (c) => {
+  const childId = c.req.param('childId');
+  const now = new Date();
+  const year = c.req.param('year') || String(now.getFullYear());
+  const month = c.req.param('month') || String(now.getMonth() + 2 > 12 ? 1 : now.getMonth() + 2);
+  return c.html(mySchedulePage(childId, year, month));
+});
+
+function mySchedulePage(childId: string, defaultYear: string, defaultMonth: string): string {
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>利用予定カレンダー — あゆっこ</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    .cal-cell { min-height: 56px; transition: all 0.15s; }
+    .cal-cell.has-plan { background: #eff6ff; border-left: 3px solid #3b82f6; }
+    .cal-cell.no-plan { background: #fff; }
+    .cal-cell.weekend { background: #fef2f2; }
+    .cal-cell.weekend.has-plan { background: #dbeafe; border-left: 3px solid #3b82f6; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <header class="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-10">
+    <div class="max-w-lg mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+        <i class="fas fa-calendar-alt text-white text-sm"></i>
+      </div>
+      <div>
+        <h1 class="text-sm font-bold text-gray-800">あゆっこ 利用予定カレンダー</h1>
+        <p id="child-info" class="text-xs text-gray-500">読み込み中...</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-lg mx-auto px-4 py-4">
+    <!-- Month Navigation -->
+    <div class="flex items-center justify-between mb-4 bg-white rounded-xl shadow-sm border border-gray-200 px-4 py-3">
+      <button onclick="changeMonth(-1)" class="text-gray-500 hover:text-blue-600 px-2 py-1 rounded">
+        <i class="fas fa-chevron-left"></i>
+      </button>
+      <h2 id="month-title" class="text-base font-bold text-gray-800"></h2>
+      <button onclick="changeMonth(1)" class="text-gray-500 hover:text-blue-600 px-2 py-1 rounded">
+        <i class="fas fa-chevron-right"></i>
+      </button>
+    </div>
+
+    <!-- Summary -->
+    <div id="summary-bar" class="flex gap-2 mb-4">
+      <div class="bg-blue-50 rounded-lg px-3 py-2 text-center flex-1 border border-blue-200">
+        <div id="sum-days" class="text-lg font-bold text-blue-700">-</div>
+        <div class="text-[10px] text-blue-500">登園予定日</div>
+      </div>
+      <div class="bg-green-50 rounded-lg px-3 py-2 text-center flex-1 border border-green-200">
+        <div id="sum-lunch" class="text-lg font-bold text-green-700">-</div>
+        <div class="text-[10px] text-green-500">昼食</div>
+      </div>
+      <div class="bg-amber-50 rounded-lg px-3 py-2 text-center flex-1 border border-amber-200">
+        <div id="sum-snack" class="text-lg font-bold text-amber-700">-</div>
+        <div class="text-[10px] text-amber-500">おやつ</div>
+      </div>
+    </div>
+
+    <!-- Calendar -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-4">
+      <div class="grid grid-cols-7 bg-gray-50 border-b border-gray-200">
+        <div class="px-1 py-2 text-center text-[10px] font-semibold text-gray-500">月</div>
+        <div class="px-1 py-2 text-center text-[10px] font-semibold text-gray-500">火</div>
+        <div class="px-1 py-2 text-center text-[10px] font-semibold text-gray-500">水</div>
+        <div class="px-1 py-2 text-center text-[10px] font-semibold text-gray-500">木</div>
+        <div class="px-1 py-2 text-center text-[10px] font-semibold text-gray-500">金</div>
+        <div class="px-1 py-2 text-center text-[10px] font-semibold text-red-400">土</div>
+        <div class="px-1 py-2 text-center text-[10px] font-semibold text-red-400">日</div>
+      </div>
+      <div id="cal-grid" class="grid grid-cols-7"></div>
+    </div>
+
+    <!-- Day List -->
+    <div id="day-list" class="space-y-1"></div>
+
+    <!-- No data state -->
+    <div id="no-data" class="hidden bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+      <i class="fas fa-calendar-times text-3xl text-gray-300 mb-3"></i>
+      <p class="text-sm text-gray-500">この月の予定はまだ提出されていません。</p>
+      <p class="text-xs text-gray-400 mt-1">LINEで予定を入力してください。</p>
+    </div>
+
+    <!-- Error state -->
+    <div id="error-state" class="hidden bg-red-50 rounded-xl border border-red-200 p-6 text-center">
+      <i class="fas fa-exclamation-triangle text-2xl text-red-400 mb-2"></i>
+      <p id="error-msg" class="text-sm text-red-600"></p>
+    </div>
+
+    <!-- Footer -->
+    <div class="text-center text-xs text-gray-400 mt-6 mb-4">
+      <p>滋賀医科大学学内保育所 あゆっこ</p>
+      <p class="mt-1">予定の変更はLINEから「予定入力」と送ってください</p>
+    </div>
+  </main>
+
+  <script>
+    const CHILD_ID = '${childId}';
+    let currentYear = parseInt('${defaultYear}');
+    let currentMonth = parseInt('${defaultMonth}');
+    let scheduleData = null;
+
+    async function loadSchedule() {
+      const grid = document.getElementById('cal-grid');
+      const dayList = document.getElementById('day-list');
+      const noData = document.getElementById('no-data');
+      const errorState = document.getElementById('error-state');
+
+      grid.innerHTML = '<div class="col-span-7 py-8 text-center text-gray-400 text-sm"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</div>';
+      dayList.innerHTML = '';
+      noData.classList.add('hidden');
+      errorState.classList.add('hidden');
+
+      document.getElementById('month-title').textContent = currentYear + '年' + currentMonth + '月';
+
+      try {
+        const res = await fetch('/api/schedules/view/' + CHILD_ID + '/' + currentYear + '/' + currentMonth);
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'HTTP ' + res.status);
+        }
+        scheduleData = await res.json();
+
+        // Child info
+        const ch = scheduleData.child;
+        document.getElementById('child-info').textContent = ch.name + '（' + ch.enrollment_type + '）';
+
+        const days = scheduleData.days || [];
+        const planned = days.filter(d => d.has_plan);
+
+        if (planned.length === 0) {
+          grid.innerHTML = '';
+          noData.classList.remove('hidden');
+          document.getElementById('sum-days').textContent = '0';
+          document.getElementById('sum-lunch').textContent = '0';
+          document.getElementById('sum-snack').textContent = '0';
+          return;
+        }
+
+        // Summary
+        document.getElementById('sum-days').textContent = planned.length;
+        document.getElementById('sum-lunch').textContent = planned.filter(d => d.lunch_flag).length;
+        const snackCount = planned.filter(d => d.am_snack_flag || d.pm_snack_flag).length;
+        document.getElementById('sum-snack').textContent = snackCount;
+
+        renderCalendar(days);
+        renderDayList(days);
+
+      } catch (e) {
+        grid.innerHTML = '';
+        errorState.classList.remove('hidden');
+        document.getElementById('error-msg').textContent = e.message;
+      }
+    }
+
+    function renderCalendar(days) {
+      const grid = document.getElementById('cal-grid');
+      // Find first day of week (Mon=0)
+      const firstDate = new Date(currentYear, currentMonth - 1, 1);
+      const firstDow = firstDate.getDay();
+      const startOffset = (firstDow + 6) % 7;
+
+      let html = '';
+      for (let i = 0; i < startOffset; i++) {
+        html += '<div class="border-b border-r border-gray-100 bg-gray-50/50 p-1"></div>';
+      }
+
+      days.forEach(d => {
+        const isWE = d.is_weekend;
+        const hasPlan = d.has_plan;
+        let cls = 'cal-cell border-b border-r border-gray-100 p-1.5 cursor-pointer';
+        cls += isWE ? ' weekend' : '';
+        cls += hasPlan ? ' has-plan' : ' no-plan';
+
+        const dateColor = isWE ? 'text-red-400' : 'text-gray-700';
+        const timeStr = hasPlan && d.planned_start && d.planned_end
+          ? '<div class="text-[9px] text-blue-600 mt-0.5">' + shortTime(d.planned_start) + '-' + shortTime(d.planned_end) + '</div>'
+          : (isWE ? '' : '<div class="text-[9px] text-gray-300 mt-0.5">—</div>');
+
+        const meals = [];
+        if (d.lunch_flag) meals.push('🍱');
+        if (d.am_snack_flag) meals.push('🍪');
+        if (d.pm_snack_flag) meals.push('🍪');
+        if (d.dinner_flag) meals.push('🍽');
+        const mealStr = meals.length > 0 ? '<div class="text-[8px] mt-0.5">' + meals.join('') + '</div>' : '';
+
+        html += '<div class="' + cls + '" onclick="scrollToDay(' + d.day + ')">' +
+          '<div class="text-xs font-semibold ' + dateColor + '">' + d.day + '</div>' +
+          timeStr + mealStr + '</div>';
+      });
+
+      // Trailing empty cells
+      const totalCells = startOffset + days.length;
+      const remainder = totalCells % 7;
+      if (remainder > 0) {
+        for (let i = 0; i < 7 - remainder; i++) {
+          html += '<div class="border-b border-r border-gray-100 bg-gray-50/50 p-1"></div>';
+        }
+      }
+
+      grid.innerHTML = html;
+    }
+
+    function renderDayList(days) {
+      const list = document.getElementById('day-list');
+      const planned = days.filter(d => d.has_plan);
+
+      list.innerHTML = '<h3 class="text-xs font-bold text-gray-600 mb-2 mt-2"><i class="fas fa-list mr-1"></i>登園予定一覧 (' + planned.length + '日)</h3>' +
+        planned.map(d => {
+          const tStr = d.planned_start && d.planned_end
+            ? shortTime(d.planned_start) + ' - ' + shortTime(d.planned_end)
+            : '時間未定';
+          const meals = [];
+          if (d.lunch_flag) meals.push('<span class="text-green-600">🍱昼食</span>');
+          if (d.am_snack_flag) meals.push('<span class="text-amber-600">🍪朝</span>');
+          if (d.pm_snack_flag) meals.push('<span class="text-amber-600">🍪午後</span>');
+          if (d.dinner_flag) meals.push('<span class="text-orange-600">🍽夕食</span>');
+          const mealStr = meals.length > 0 ? meals.join(' ') : '';
+          const srcBadge = d.source === 'LINE'
+            ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded text-[9px]"><i class="fab fa-line mr-0.5"></i>LINE</span>'
+            : d.source ? '<span class="bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded text-[9px]">' + d.source + '</span>' : '';
+
+          return '<div id="day-' + d.day + '" class="bg-white rounded-lg shadow-sm border border-gray-200 px-3 py-2 flex items-center justify-between">' +
+            '<div>' +
+              '<span class="text-sm font-semibold text-gray-800">' + currentMonth + '/' + d.day + ' (' + d.weekday + ')</span> ' +
+              srcBadge +
+              '<div class="text-xs text-blue-600 mt-0.5"><i class="fas fa-clock mr-0.5"></i>' + tStr + '</div>' +
+              (mealStr ? '<div class="text-[10px] mt-0.5">' + mealStr + '</div>' : '') +
+            '</div>' +
+            '<div class="text-blue-500"><i class="fas fa-check-circle"></i></div>' +
+          '</div>';
+        }).join('');
+    }
+
+    function shortTime(t) {
+      if (!t) return '';
+      const m = t.match(/^0?(\\d{1,2}):(\\d{2})/);
+      return m ? parseInt(m[1]) + ':' + m[2] : t;
+    }
+
+    function changeMonth(delta) {
+      currentMonth += delta;
+      if (currentMonth > 12) { currentMonth = 1; currentYear++; }
+      if (currentMonth < 1) { currentMonth = 12; currentYear--; }
+      loadSchedule();
+    }
+
+    function scrollToDay(day) {
+      const el = document.getElementById('day-' + day);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('ring-2', 'ring-blue-400');
+        setTimeout(() => el.classList.remove('ring-2', 'ring-blue-400'), 2000);
+      }
+    }
+
+    // Init
+    loadSchedule();
+  </script>
+</body>
+</html>`;
+}
 
 export default app;
