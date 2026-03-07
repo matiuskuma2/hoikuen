@@ -1,6 +1,6 @@
 # あゆっこ保育所 業務自動化システム
 
-> **Version**: 8.1 — LINE管理画面追加 (2026-03-07)
+> **Version**: 8.2 — 保護者カレンダー・提出状況ダッシュボード (2026-03-07)
 > **GitHub**: https://github.com/matiuskuma2/hoikuen
 
 ---
@@ -13,6 +13,7 @@
 | **Staging** | https://ayukko-stg.pages.dev | ✅ 稼働中 |
 | LINE Health | https://ayukko-prod.pages.dev/api/line/health | ✅ |
 | LINE Webhook | https://ayukko-prod.pages.dev/api/line/webhook | ✅ 実機テスト済み |
+| 保護者カレンダー | https://ayukko-prod.pages.dev/my/{childId} | ✅ NEW |
 
 ---
 
@@ -123,6 +124,8 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 | Method | Path | 説明 |
 |--------|------|------|
 | GET | `/` | メインUI (ダッシュボード) |
+| GET | `/my/:childId` | 保護者向けカレンダー（月別予定一覧） |
+| GET | `/my/:childId/:year/:month` | 保護者向けカレンダー（年月指定） |
 | GET | `/api/health` | ヘルスチェック |
 | GET | `/api/config` | Generator URL設定 |
 
@@ -137,8 +140,9 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 ### 予定管理
 | Method | Path | 説明 |
 |--------|------|------|
-| POST | `/api/schedules/dashboard` | ダッシュボード用データ取得 |
+| POST | `/api/schedules/dashboard` | ダッシュボード用データ取得（提出状況概要含む） |
 | POST | `/api/schedules/upsert` | 予定UPSERT |
+| GET | `/api/schedules/view/:childId/:year/:month` | 保護者カレンダーAPI |
 | GET | `/api/schedules/:childId/:year/:month` | 園児別予定取得 |
 
 ### LINE連携
@@ -196,6 +200,12 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
   - 🟢 連携コード発行・一覧表示（使用状況・有効期限・使用者）
   - 🟢 月次提出状況（全園児のLINE連携/提出済み/未提出を一覧表示）
   - 🟢 提出状況サマリー（園児数・連携済・提出済・未提出のカウント）
+- **保護者カレンダー** (v8.2)
+  - 🟢 園児別カレンダーページ `/my/{childId}` — 月ナビゲーション・日別一覧・食事バッジ
+  - 🟢 カレンダーURLを管理画面の提出状況テーブルからリンク
+- **ダッシュボード提出状況** (v8.2)
+  - 🟢 提出済/未提出の園児を名前つきで表示（空スロット対応）
+  - 🟢 未提出の園児が赤枠で強調表示
 - Cloudflare Production / Staging 環境構築
 - D1 マイグレーション + seed データ投入
 
@@ -227,6 +237,7 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 
 | 日付 | 内容 |
 |------|------|
+| 2026-03-07 | **v8.2**: 保護者カレンダー `/my/{childId}`, ダッシュボード提出状況概要パネル, LINE管理テーブルにカレンダーリンク追加 |
 | 2026-03-07 | **v8.1**: LINE管理画面（友だち追加リンク・連携コード発行・提出状況一覧）追加 |
 | 2026-03-07 | **v8.0**: Production/Staging環境構築、LINE実機テスト完了 |
 | 2026-03-06 | **v7.0**: LINE Phase 1 MVP実装 — 会話状態機械・予定入力・UPSERT保存 |
