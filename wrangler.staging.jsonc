@@ -1,20 +1,20 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "ayukko-prod",
+  "name": "ayukko-stg",
   "compatibility_date": "2024-09-23",
   "compatibility_flags": ["nodejs_compat"],
   "pages_build_output_dir": "./dist",
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "ayukko-production",
-      "database_id": "baef24d6-bc8e-445d-84bf-01b0287b9594"
+      "database_name": "ayukko-staging",
+      "database_id": "285fa9a7-0344-444c-962e-c3e7f60b33ac"
     }
   ],
   "r2_buckets": [
     {
       "binding": "R2",
-      "bucket_name": "ayukko-files-prod"
+      "bucket_name": "ayukko-files-stg"
     }
   ]
 }

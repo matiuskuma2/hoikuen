@@ -8,15 +8,18 @@
     "dev:sandbox": "wrangler pages dev dist --d1=ayukko-production --local --ip 0.0.0.0 --port 3000",
     "build": "vite build",
     "preview": "wrangler pages dev dist",
-    "deploy": "npm run build && wrangler pages deploy dist",
-    "deploy:prod": "npm run build && wrangler pages deploy dist --project-name ayukko-nursery",
+    "deploy:stg": "npm run build && wrangler pages deploy dist --project-name ayukko-stg --config wrangler.staging.jsonc --commit-dirty=true",
+    "deploy:prod": "npm run build && wrangler pages deploy dist --project-name ayukko-prod --commit-dirty=true",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "clean-port": "fuser -k 3000/tcp 2>/dev/null || true",
     "test": "curl http://localhost:3000",
     "db:migrate:local": "wrangler d1 migrations apply ayukko-production --local",
-    "db:migrate:prod": "wrangler d1 migrations apply ayukko-production",
-    "db:seed": "wrangler d1 execute ayukko-production --local --file=./seed.sql",
-    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local && npm run db:seed"
+    "db:migrate:stg": "wrangler d1 migrations apply ayukko-staging --remote --config wrangler.staging.jsonc",
+    "db:migrate:prod": "wrangler d1 migrations apply ayukko-production --remote",
+    "db:seed:local": "wrangler d1 execute ayukko-production --local --file=./seed.sql && wrangler d1 execute ayukko-production --local --file=./seed.dev.sql",
+    "db:seed:stg": "wrangler d1 execute ayukko-staging --remote --file=./seed.sql --config wrangler.staging.jsonc && wrangler d1 execute ayukko-staging --remote --file=./seed.dev.sql --config wrangler.staging.jsonc",
+    "db:seed:prod": "wrangler d1 execute ayukko-production --remote --file=./seed.sql",
+    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local && npm run db:seed:local"
   },
   "dependencies": {
     "hono": "^4.7.0"
