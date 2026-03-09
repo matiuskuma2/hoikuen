@@ -265,10 +265,15 @@ export async function getLinkedChildren(
  * 固定フォーマットの予定入力をパースする
  * 
  * 対応フォーマット:
- *   - "4/1 8:30-17:30"
- *   - "4/1 8:30 17:30"
- *   - "4/1-4/5 8:30-17:30"  (範囲指定)
- *   - "1日 8:30-17:30"
+ *   - "4/1 8:30-17:30"           (月/日 開始-終了)
+ *   - "4/1 8:30 17:30"           (月/日 開始 終了)
+ *   - "4/1-4/5 8:30-17:30"      (月/日-月/日 範囲指定)
+ *   - "4/1-4/5 8:00-18:00"      (月/日-月/日 範囲指定、丸時間)
+ *   - "1日 8:30-17:30"           (日のみ)
+ *   - "1日-5日 8:30-17:30"      (日のみ範囲指定)
+ *   - "1日7時30分から17時"       (自然言語風)
+ *   - "1日 8時-17時"             (時のみ、分省略)
+ *   - "1日 8時30分-17時30分"     (時分表記)
  *   - 複数行対応
  * 
  * @returns パースされたエントリ配列 + エラーメッセージ
@@ -295,6 +300,103 @@ export function parseScheduleInput(
   return { entries, errors };
 }
 
+/**
+ * 時間表記を正規化してHH:MM形式に変換
+ * "8:30" → "08:30"
+ * "8時30分" → "08:30"
+ * "8時" → "08:00"
+ * "17:30" → "17:30"
+ */
+function parseTimeExpression(expr: string): string | null {
+  expr = expr.trim();
+  
+  // "8:30" or "08:30" 形式
+  const colonMatch = expr.match(/^(\d{1,2}):(\d{2})$/);
+  if (colonMatch) {
+    return normalizeTime(`${colonMatch[1]}:${colonMatch[2]}`);
+  }
+  
+  // "8時30分" or "8時" 形式
+  const jpTimeMatch = expr.match(/^(\d{1,2})時(?:(\d{1,2})分?)?$/);
+  if (jpTimeMatch) {
+    const h = jpTimeMatch[1];
+    const m = jpTimeMatch[2] ?? '00';
+    return normalizeTime(`${h}:${m.padStart(2, '0')}`);
+  }
+  
+  return null;
+}
+
+/**
+ * テキストから時間範囲（開始-終了）を抽出
+ * "8:30-17:30" → ["08:30", "17:30"]
+ * "8:30 17:30" → ["08:30", "17:30"]
+ * "8時30分から17時" → ["08:30", "17:00"]
+ * "8時-17時30分" → ["08:00", "17:30"]
+ */
+function parseTimeRange(text: string): { start: string; end: string } | null {
+  text = text.trim();
+  
+  // Pattern A: "HH:MM-HH:MM" or "HH:MM HH:MM" (standard colon format)
+  const colonPairMatch = text.match(/^(\d{1,2}:\d{2})\s*[-\s]\s*(\d{1,2}:\d{2})$/);
+  if (colonPairMatch) {
+    const start = parseTimeExpression(colonPairMatch[1]);
+    const end = parseTimeExpression(colonPairMatch[2]);
+    if (start && end) return { start, end };
+  }
+  
+  // Pattern B: Japanese time expressions "8時30分から17時" or "8時-17時30分"
+  // Match: <time_expr> <separator> <time_expr>
+  const jpRangeMatch = text.match(/^(\d{1,2}時(?:\d{1,2}分?)?)\s*(?:から|~|-|ー|〜|～)\s*(\d{1,2}時(?:\d{1,2}分?)?)$/);
+  if (jpRangeMatch) {
+    const start = parseTimeExpression(jpRangeMatch[1]);
+    const end = parseTimeExpression(jpRangeMatch[2]);
+    if (start && end) return { start, end };
+  }
+  
+  // Pattern C: Mixed "8:30-17時" or "8時-17:30"
+  const mixedMatch = text.match(/^(\d{1,2}(?::\d{2}|時(?:\d{1,2}分?)?))\s*(?:から|~|-|ー|〜|～)\s*(\d{1,2}(?::\d{2}|時(?:\d{1,2}分?)?))$/);
+  if (mixedMatch) {
+    const start = parseTimeExpression(mixedMatch[1]);
+    const end = parseTimeExpression(mixedMatch[2]);
+    if (start && end) return { start, end };
+  }
+  
+  return null;
+}
+
+/**
+ * 日付部分をパースして日番号を返す
+ * "4/1" → 1 (月/日 → 日のみ返す。月は検証用)
+ * "1日" → 1
+ * "1" → 1
+ */
+function parseDayExpression(expr: string, expectedMonth: number): number | null {
+  expr = expr.trim();
+  
+  // "4/1" → month=4, day=1
+  const slashMatch = expr.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (slashMatch) {
+    const m = parseInt(slashMatch[1]);
+    const d = parseInt(slashMatch[2]);
+    // 月が一致するか緩くチェック（一致しなくても日だけ使う）
+    if (m !== expectedMonth) {
+      // 月が違う場合でも、日だけ返す（ユーザーが4月入力中に4/1と打つのは普通）
+    }
+    return d;
+  }
+  
+  // "1日" → 1
+  const dayMatch = expr.match(/^(\d{1,2})日$/);
+  if (dayMatch) return parseInt(dayMatch[1]);
+  
+  // "1" → 1 (bare number)
+  const numMatch = expr.match(/^(\d{1,2})$/);
+  if (numMatch) return parseInt(numMatch[1]);
+  
+  return null;
+}
+
 function parseSingleLine(
   line: string,
   year: number,
@@ -307,60 +409,149 @@ function parseSingleLine(
     .replace(/ー/g, '-')
     .replace(/〜/g, '-')
     .replace(/～/g, '-')
-    .replace(/　/g, ' ');
+    .replace(/　/g, ' ')
+    .trim();
 
-  // パターン1: "4/1 8:30-17:30" or "4/1 8:30 17:30"
+  // ============================================================
+  // パターン1: 日付範囲 + 時間範囲
+  // "4/1-4/5 8:30-17:30", "1日-5日 8:30-17:30", "1-5 8:30-17:30"
+  // ============================================================
+  
+  // Match: <day_expr>-<day_expr> <time_range>
+  // Key insight: 時間範囲は最後の "数字:数字" ペアで始まる
+  const rangeWithSlashMatch = normalized.match(
+    /^(\d{1,2}\/\d{1,2})\s*-\s*(\d{1,2}\/\d{1,2})\s+(.+)$/,
+  );
+  if (rangeWithSlashMatch) {
+    const dayStart = parseDayExpression(rangeWithSlashMatch[1], month);
+    const dayEnd = parseDayExpression(rangeWithSlashMatch[2], month);
+    const timeRange = parseTimeRange(rangeWithSlashMatch[3]);
+    
+    if (dayStart !== null && dayEnd !== null && timeRange) {
+      return buildRangeEntries(dayStart, dayEnd, timeRange.start, timeRange.end, year, month, line);
+    }
+  }
+  
+  // "1日-5日 8:30-17:30" or "1-5日 8:30-17:30"
+  const rangeDayMatch = normalized.match(
+    /^(\d{1,2})日?\s*-\s*(\d{1,2})日?\s+(.+)$/,
+  );
+  if (rangeDayMatch) {
+    const dayStart = parseInt(rangeDayMatch[1]);
+    const dayEnd = parseInt(rangeDayMatch[2]);
+    const timeRange = parseTimeRange(rangeDayMatch[3]);
+    
+    if (timeRange) {
+      return buildRangeEntries(dayStart, dayEnd, timeRange.start, timeRange.end, year, month, line);
+    }
+  }
+
+  // ============================================================
+  // パターン2: 単日 + 時間範囲
+  // "4/1 8:30-17:30", "1日 8:30-17:30", "1 8:30-17:30"
+  // ============================================================
+  
+  // "4/1 8:30-17:30"
+  const singleSlashMatch = normalized.match(
+    /^(\d{1,2}\/\d{1,2})\s+(.+)$/,
+  );
+  if (singleSlashMatch) {
+    const day = parseDayExpression(singleSlashMatch[1], month);
+    const timeRange = parseTimeRange(singleSlashMatch[2]);
+    
+    if (day !== null && timeRange) {
+      const validation = validateEntry(day, timeRange.start, timeRange.end, year, month);
+      if (validation) return { entries: [], error: `${line}: ${validation}` };
+      return { entries: [{ day, start: timeRange.start, end: timeRange.end }], error: null };
+    }
+  }
+  
+  // "1日 8:30-17:30" or "1日8時30分から17時"
   const singleDayMatch = normalized.match(
-    /^(\d{1,2})[\/日]\s*(\d{1,2}:\d{2})\s*[-\s]\s*(\d{1,2}:\d{2})/,
+    /^(\d{1,2})日?\s*(.+)$/,
   );
   if (singleDayMatch) {
     const day = parseInt(singleDayMatch[1]);
-    const start = normalizeTime(singleDayMatch[2]);
-    const end = normalizeTime(singleDayMatch[3]);
-    const validation = validateEntry(day, start, end, year, month);
-    if (validation) return { entries: [], error: `${line}: ${validation}` };
-    return { entries: [{ day, start, end }], error: null };
+    const timeRange = parseTimeRange(singleDayMatch[2]);
+    
+    if (timeRange) {
+      const validation = validateEntry(day, timeRange.start, timeRange.end, year, month);
+      if (validation) return { entries: [], error: `${line}: ${validation}` };
+      return { entries: [{ day, start: timeRange.start, end: timeRange.end }], error: null };
+    }
   }
 
-  // パターン2: "4/1-4/5 8:30-17:30" (日付範囲)
-  const rangeMatch = normalized.match(
-    /^(\d{1,2})[\/日]\s*-\s*(\d{1,2})[\/日]?\s+(\d{1,2}:\d{2})\s*[-\s]\s*(\d{1,2}:\d{2})/,
-  );
-  if (rangeMatch) {
-    const dayStart = parseInt(rangeMatch[1]);
-    const dayEnd = parseInt(rangeMatch[2]);
-    const start = normalizeTime(rangeMatch[3]);
-    const end = normalizeTime(rangeMatch[4]);
-
-    if (dayStart > dayEnd) {
-      return { entries: [], error: `${line}: 開始日が終了日より後です` };
-    }
-
-    const entries: DraftEntry[] = [];
-    for (let d = dayStart; d <= dayEnd; d++) {
-      const validation = validateEntry(d, start, end, year, month);
-      if (validation) {
-        return { entries: [], error: `${line}: ${d}日 - ${validation}` };
-      }
-      entries.push({ day: d, start, end });
-    }
-    return { entries, error: null };
-  }
-
-  // パターン3: "1日 8:30-17:30"  
-  const dayOnlyMatch = normalized.match(
-    /^(\d{1,2})日?\s+(\d{1,2}:\d{2})\s*[-\s]\s*(\d{1,2}:\d{2})/,
-  );
-  if (dayOnlyMatch) {
-    const day = parseInt(dayOnlyMatch[1]);
-    const start = normalizeTime(dayOnlyMatch[2]);
-    const end = normalizeTime(dayOnlyMatch[3]);
-    const validation = validateEntry(day, start, end, year, month);
-    if (validation) return { entries: [], error: `${line}: ${validation}` };
-    return { entries: [{ day, start, end }], error: null };
+  // ============================================================
+  // パターン3: 自然言語風（"1日7時30分から17時2日から10日8時から18時" のような連続入力）
+  // → これは1行に複数の予定が入っているケース
+  // ============================================================
+  const naturalEntries = parseNaturalLanguage(normalized, year, month);
+  if (naturalEntries.length > 0) {
+    return { entries: naturalEntries, error: null };
   }
 
   return { entries: [], error: `「${line}」の形式を認識できませんでした。\n例: 4/1 8:30-17:30` };
+}
+
+/**
+ * 自然言語風の入力をパース
+ * "1日7時30分から17時2日から10日8時から18時" → 複数エントリ
+ */
+function parseNaturalLanguage(
+  text: string,
+  year: number,
+  month: number,
+): DraftEntry[] {
+  const entries: DraftEntry[] = [];
+  
+  // "N日M時N分からM時N分" のパターンを繰り返し検索
+  const pattern = /(\d{1,2})日\s*(\d{1,2})時(\d{1,2})?分?\s*(?:から|~|-)\s*(\d{1,2})時(\d{1,2})?分?/g;
+  let match;
+  
+  while ((match = pattern.exec(text)) !== null) {
+    const day = parseInt(match[1]);
+    const startH = match[2].padStart(2, '0');
+    const startM = (match[3] ?? '0').padStart(2, '0');
+    const endH = match[4].padStart(2, '0');
+    const endM = (match[5] ?? '0').padStart(2, '0');
+    
+    const start = `${startH}:${startM}`;
+    const end = `${endH}:${endM}`;
+    
+    const validation = validateEntry(day, start, end, year, month);
+    if (!validation) {
+      entries.push({ day, start, end });
+    }
+  }
+  
+  return entries;
+}
+
+/**
+ * 日付範囲からエントリを生成
+ */
+function buildRangeEntries(
+  dayStart: number,
+  dayEnd: number,
+  start: string,
+  end: string,
+  year: number,
+  month: number,
+  originalLine: string,
+): { entries: DraftEntry[]; error: string | null } {
+  if (dayStart > dayEnd) {
+    return { entries: [], error: `${originalLine}: 開始日が終了日より後です` };
+  }
+
+  const entries: DraftEntry[] = [];
+  for (let d = dayStart; d <= dayEnd; d++) {
+    const validation = validateEntry(d, start, end, year, month);
+    if (validation) {
+      return { entries: [], error: `${originalLine}: ${d}日 - ${validation}` };
+    }
+    entries.push({ day: d, start, end });
+  }
+  return { entries, error: null };
 }
 
 function normalizeTime(time: string): string {
@@ -397,7 +588,43 @@ function validateEntry(
 // ============================================================
 
 /**
+ * 登降園時間から食事フラグを自動判定
+ * 
+ * ルール:
+ * - 登園が12:00より前 → 昼食あり (lunch_flag=1)
+ * - 登園が9:30より前 → 午前おやつあり (am_snack_flag=1)
+ * - 降園が15:00以降 → 午後おやつあり (pm_snack_flag=1)
+ * - 降園が19:00以降 → 夕食あり (dinner_flag=1)
+ */
+export function calculateMealFlags(start: string, end: string): {
+  lunch_flag: number;
+  am_snack_flag: number;
+  pm_snack_flag: number;
+  dinner_flag: number;
+} {
+  const startMinutes = timeToMinutes(start);
+  const endMinutes = timeToMinutes(end);
+  
+  return {
+    // 12時前に登園 → 昼食あり
+    lunch_flag: startMinutes < timeToMinutes('12:00') ? 1 : 0,
+    // 9:30前に登園 → 午前おやつあり
+    am_snack_flag: startMinutes < timeToMinutes('09:30') ? 1 : 0,
+    // 15時以降に降園 → 午後おやつあり
+    pm_snack_flag: endMinutes >= timeToMinutes('15:00') ? 1 : 0,
+    // 19時以降に降園 → 夕食あり
+    dinner_flag: endMinutes >= timeToMinutes('19:00') ? 1 : 0,
+  };
+}
+
+function timeToMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+
+/**
  * 確定された予定を schedule_plans に UPSERT
+ * 食事フラグは登降園時間から自動判定
  */
 export async function saveScheduleEntries(
   db: D1Database,
@@ -409,13 +636,19 @@ export async function saveScheduleEntries(
   let savedCount = 0;
 
   for (const entry of entries) {
+    const meals = calculateMealFlags(entry.start, entry.end);
+    
     await db
       .prepare(
         `INSERT INTO schedule_plans (id, child_id, year, month, day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 'LINE')
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LINE')
          ON CONFLICT (child_id, year, month, day) DO UPDATE SET
            planned_start = excluded.planned_start,
            planned_end = excluded.planned_end,
+           lunch_flag = excluded.lunch_flag,
+           am_snack_flag = excluded.am_snack_flag,
+           pm_snack_flag = excluded.pm_snack_flag,
+           dinner_flag = excluded.dinner_flag,
            source_file = 'LINE'`,
       )
       .bind(
@@ -426,6 +659,10 @@ export async function saveScheduleEntries(
         entry.day,
         entry.start,
         entry.end,
+        meals.lunch_flag,
+        meals.am_snack_flag,
+        meals.pm_snack_flag,
+        meals.dinner_flag,
       )
       .run();
     savedCount++;
@@ -495,7 +732,7 @@ export function mergeDraftEntries(
 }
 
 /**
- * ドラフトを確認メッセージに整形
+ * ドラフトを確認メッセージに整形（食事フラグ付き）
  */
 export function formatDraftForConfirmation(
   entries: DraftEntry[],
@@ -506,7 +743,14 @@ export function formatDraftForConfirmation(
 
   const lines = entries.map((e) => {
     const dow = getDayOfWeek(year, month, e.day);
-    return `  ${month}/${e.day}(${dow}) ${e.start}〜${e.end}`;
+    const meals = calculateMealFlags(e.start, e.end);
+    const mealIcons: string[] = [];
+    if (meals.am_snack_flag) mealIcons.push('朝おやつ');
+    if (meals.lunch_flag) mealIcons.push('昼食');
+    if (meals.pm_snack_flag) mealIcons.push('午後おやつ');
+    if (meals.dinner_flag) mealIcons.push('夕食');
+    const mealStr = mealIcons.length > 0 ? ` [${mealIcons.join('・')}]` : '';
+    return `  ${month}/${e.day}(${dow}) ${e.start}〜${e.end}${mealStr}`;
   });
 
   return `📅 ${year}年${month}月の利用予定:\n\n${lines.join('\n')}\n\n合計: ${entries.length}日`;
