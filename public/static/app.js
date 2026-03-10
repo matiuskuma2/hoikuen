@@ -829,20 +829,26 @@ async function loadDashboard() {
     }
     state.files.schedule.forEach(f => formData.append('schedule_files', f));
 
-    // v9.0: Use Hono TypeScript API (no Python dependency)
+    // v9.1: Use Hono TypeScript API (no Python dependency)
+    console.log('[Ayukko] Uploading to /api/upload/dashboard...');
     const response = await fetch('/api/upload/dashboard', {
       method: 'POST',
       body: formData,
     });
+    console.log('[Ayukko] Response status:', response.status);
 
     if (!response.ok) {
-      let err;
+      let errText = '';
       try {
-        err = await response.json();
-      } catch {
-        err = { error: `HTTP ${response.status}: ${response.statusText}` };
+        errText = await response.text();
+        const errJson = JSON.parse(errText);
+        throw new Error(errJson.error || `HTTP ${response.status}`);
+      } catch (parseErr) {
+        if (parseErr.message && !parseErr.message.startsWith('HTTP')) {
+          throw parseErr;
+        }
+        throw new Error(`HTTP ${response.status}: ${response.statusText} — ${errText.substring(0, 200)}`);
       }
-      throw new Error(err.error || `HTTP ${response.status}`);
     }
 
     let data;
