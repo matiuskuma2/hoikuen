@@ -829,7 +829,8 @@ async function loadDashboard() {
     }
     state.files.schedule.forEach(f => formData.append('schedule_files', f));
 
-    const response = await fetch(getGenerateUrl('dashboard'), {
+    // v9.0: Use Hono TypeScript API (no Python dependency)
+    const response = await fetch('/api/upload/dashboard', {
       method: 'POST',
       body: formData,
     });

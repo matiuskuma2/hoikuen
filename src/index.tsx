@@ -14,6 +14,7 @@ import childRoutes from './routes/children';
 import templateRoutes from './routes/templates';
 import scheduleRoutes from './routes/schedules';
 import lineRoutes from './routes/line';
+import uploadRoutes from './routes/upload';
 
 const app = new Hono<HonoEnv>();
 
@@ -44,9 +45,9 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '8.4',
+    version: '9.0',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
-    phase: 'Dashboard + Generator (Direct Mode)',
+    phase: 'Full TypeScript (No Python dependency)',
     timestamp: new Date().toISOString(),
   });
 });
@@ -86,6 +87,7 @@ app.route('/api/children', childRoutes);
 app.route('/api/templates', templateRoutes);
 app.route('/api/schedules', scheduleRoutes);
 app.route('/api/line', lineRoutes);
+app.route('/api/upload', uploadRoutes);
 
 // Main UI HTML
 function mainPage(): string {
