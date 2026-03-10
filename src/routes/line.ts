@@ -429,7 +429,7 @@ async function stateSelectMonth(
 
   await replyMessage(replyToken, [{
     type: 'text',
-    text: `📅 ${year}年${month}月（${daysInMonth}日まで）の予定を入力してください。\n\n【入力形式】\n  日付 登園-降園\n\n【例】\n  1日 8:30-17:30\n  4/2 9:00-18:00\n  4/1-4/5 8:30-17:30\n\n※食事は時間から自動判定します\n（12時前登園→昼食、15時以降降園→午後おやつ等）\n\n複数行まとめて入力OK！\n入力が終わったら「確認」と送ってください。`,
+    text: `📅 ${year}年${month}月（${daysInMonth}日まで）の予定を入力してください。\n\n【一括入力（おすすめ）】\n  平日 8:30-17:30\n  → 月〜金に一括で入力されます\n\n【個別入力】\n  4/1 8:30-17:30\n  4/1-4/5 8:30-17:30\n\n【休みの日】\n  3日 休み\n\n【便利機能】\n  前月コピー → 先月の予定をコピー\n\n※食事は時間から自動判定します\n\n入力が終わったら「確認」と送ってください。`,
   }], token);
 }
 
@@ -454,7 +454,7 @@ async function stateCollecting(
     if (drafts.length === 0) {
       await replyMessage(replyToken, [{
         type: 'text',
-        text: 'まだ予定が入力されていません。\n\n日付と時間を入力してください。\n（例: 1日 8:30-17:30）',
+        text: 'まだ予定が入力されていません。\n\n日付と時間を入力してください。\n（例: 平日 8:30-17:30）',
       }], token);
       return;
     }
@@ -475,7 +475,7 @@ async function stateCollecting(
     if (drafts.length === 0) {
       await replyMessage(replyToken, [{
         type: 'text',
-        text: 'まだ予定が入力されていません。\n\n日付と時間を入力してください。\n（例: 1日 8:30-17:30）',
+        text: 'まだ予定が入力されていません。\n\n日付と時間を入力してください。\n（例: 平日 8:30-17:30）',
       }], token);
     } else {
       const summary = formatDraftForConfirmation(drafts, year, month);
@@ -492,18 +492,99 @@ async function stateCollecting(
     await updateConversation(db, userId, { draft_entries: '[]' });
     await replyMessage(replyToken, [{
       type: 'text',
-      text: '入力内容をクリアしました。\n\n日付と時間を入力してください。\n（例: 1日 8:30-17:30）',
+      text: '入力内容をクリアしました。\n\n日付と時間を入力してください。\n（例: 平日 8:30-17:30）',
+    }], token);
+    return;
+  }
+
+  // 「前月コピー」→ 前月の予定をコピー
+  if (/^(前月コピー|前月|コピー|先月コピー)$/i.test(text)) {
+    const childId = convData.current_child_id!;
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevYear = month === 1 ? year - 1 : year;
+
+    const prevSchedules = await db
+      .prepare(
+        `SELECT day, planned_start, planned_end FROM schedule_plans
+         WHERE child_id = ? AND year = ? AND month = ?
+         ORDER BY day`,
+      )
+      .bind(childId, prevYear, prevMonth)
+      .all<{ day: number; planned_start: string; planned_end: string }>();
+
+    if (prevSchedules.results.length === 0) {
+      await replyMessage(replyToken, [{
+        type: 'text',
+        text: `${prevYear}年${prevMonth}月の予定が見つかりませんでした。\n\n手動で入力してください。\n（例: 平日 8:30-17:30）`,
+      }], token);
+      return;
+    }
+
+    // 前月の予定を今月にコピー（日は同じ番号で、月の最終日を超えない）
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const newEntries: DraftEntry[] = [];
+    for (const s of prevSchedules.results) {
+      if (s.day <= daysInMonth && s.planned_start && s.planned_end) {
+        newEntries.push({ day: s.day, start: s.planned_start, end: s.planned_end });
+      }
+    }
+
+    if (newEntries.length === 0) {
+      await replyMessage(replyToken, [{
+        type: 'text',
+        text: `${prevYear}年${prevMonth}月の予定をコピーできませんでした。`,
+      }], token);
+      return;
+    }
+
+    const existingDrafts = getDraftEntries(convData);
+    const merged = mergeDraftEntries(existingDrafts, newEntries);
+    await updateConversation(db, userId, {
+      draft_entries: JSON.stringify(merged),
+    });
+
+    await replyMessage(replyToken, [{
+      type: 'text',
+      text: `📋 ${prevYear}年${prevMonth}月の予定（${newEntries.length}日分）をコピーしました。\n\n現在 ${merged.length}日分入力済み。\n\n変更がある日は上書き入力してください。\n（例: 3日 休み / 15日 9:00-16:00）\n\n入力が終わったら「確認」と送ってください。`,
     }], token);
     return;
   }
 
   // 予定入力をパース
-  const { entries, errors } = parseScheduleInput(text, year, month);
+  const { entries, removeDays, errors } = parseScheduleInput(text, year, month);
+
+  // 休み指定（removeDays）の処理
+  if (removeDays.length > 0) {
+    const existingDrafts = getDraftEntries(convData);
+    const filtered = existingDrafts.filter(e => !removeDays.includes(e.day));
+    const removedCount = existingDrafts.length - filtered.length;
+
+    // 新しいエントリもマージ
+    const merged = entries.length > 0 ? mergeDraftEntries(filtered, entries) : filtered;
+    await updateConversation(db, userId, {
+      draft_entries: JSON.stringify(merged),
+    });
+
+    let reply = '';
+    if (removedCount > 0) {
+      reply += `🗑️ ${removeDays.map(d => `${d}日`).join('・')}を休みにしました。`;
+    }
+    if (entries.length > 0) {
+      reply += `\n✅ ${entries.length}日分を追加しました。`;
+    }
+    if (errors.length > 0) {
+      reply += `\n\n⚠️ 一部エラー:\n${errors.join('\n')}`;
+    }
+    reply += `\n\n現在 ${merged.length}日分入力済み。\n続けて入力するか、「確認」で確定へ進みます。`;
+
+    await replyMessage(replyToken, [{ type: 'text', text: reply }], token);
+    return;
+  }
 
   if (entries.length === 0 && errors.length > 0) {
     await replyMessage(replyToken, [{
       type: 'text',
-      text: `⚠️ 入力エラー:\n${errors.join('\n')}\n\n【正しい形式】\n  1日 8:30-17:30\n  4/1-4/5 8:30-17:30`,
+      text: `⚠️ 入力エラー:\n${errors.join('\n')}\n\n【正しい形式】\n  平日 8:30-17:30\n  4/1-4/5 8:30-17:30\n  3日 休み`,
     }], token);
     return;
   }
@@ -511,7 +592,7 @@ async function stateCollecting(
   if (entries.length === 0) {
     await replyMessage(replyToken, [{
       type: 'text',
-      text: '入力形式を認識できませんでした。\n\n【例】\n  1日 8:30-17:30\n  4/1 9:00-18:00\n  5日-10日 8:30-17:30\n\n入力が終わったら「確認」と送ってください。',
+      text: '入力形式を認識できませんでした。\n\n【例】\n  平日 8:30-17:30（一括入力）\n  4/1 9:00-18:00\n  4/1-4/5 8:30-17:30\n  3日 休み\n\n入力が終わったら「確認」と送ってください。',
     }], token);
     return;
   }
@@ -640,7 +721,7 @@ async function handleHelp(
 ): Promise<void> {
   await replyMessage(replyToken, [{
     type: 'text',
-    text: `📖 あゆっこ利用予定システム\n\n【基本の流れ】\n1️⃣ 連携コード入力（初回のみ）\n2️⃣ 「予定入力」と送る\n3️⃣ 月を選ぶ（例: 4月）\n4️⃣ 予定を入力\n   例: 1日 8:30-17:30\n5️⃣ 「確認」→「確定」で保存\n\n【入力形式】\n・1日 8:30-17:30\n・4/1 9:00-18:00\n・4/1-4/5 8:30-17:30（範囲）\n・複数行まとめてOK\n\n※食事は時間から自動判定\n（昼食・おやつ等）\n\n【コマンド】\n・確認 → 入力内容を確認\n・確定 → 予定を保存\n・一覧 → 現在の入力内容\n・クリア → 入力をやり直し\n・リセット → 最初に戻る`,
+    text: `📖 あゆっこ利用予定システム\n\n【基本の流れ】\n1️⃣ 連携コード入力（初回のみ）\n2️⃣ 「予定入力」と送る\n3️⃣ 月を選ぶ（例: 4月）\n4️⃣ 予定を入力\n5️⃣ 「確認」→「確定」で保存\n\n【一括入力】\n・平日 8:30-17:30（月〜金一括）\n・月水金 9:00-17:00（曜日指定）\n・前月コピー（先月の予定をコピー）\n\n【個別入力】\n・4/1 8:30-17:30\n・4/1-4/5 8:30-17:30（範囲）\n\n【休み】\n・3日 休み\n\n※食事は時間から自動判定\n\n【コマンド】\n・確認/確定/一覧/クリア/リセット`,
   }], token);
 }
 

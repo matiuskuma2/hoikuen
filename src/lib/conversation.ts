@@ -274,6 +274,9 @@ export async function getLinkedChildren(
  *   - "1日7時30分から17時"       (自然言語風)
  *   - "1日 8時-17時"             (時のみ、分省略)
  *   - "1日 8時30分-17時30分"     (時分表記)
+ *   - "平日 8:30-17:30"          (月〜金一括)
+ *   - "月-金 8:30-17:30"         (曜日範囲一括)
+ *   - "3日 休み"                  (特定日の休み = ドラフトから削除)
  *   - 複数行対応
  * 
  * @returns パースされたエントリ配列 + エラーメッセージ
@@ -282,8 +285,9 @@ export function parseScheduleInput(
   text: string,
   year: number,
   month: number,
-): { entries: DraftEntry[]; errors: string[] } {
+): { entries: DraftEntry[]; removeDays: number[]; errors: string[] } {
   const entries: DraftEntry[] = [];
+  const removeDays: number[] = [];
   const errors: string[] = [];
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
 
@@ -292,12 +296,15 @@ export function parseScheduleInput(
     if (parsed.entries.length > 0) {
       entries.push(...parsed.entries);
     }
+    if (parsed.removeDays && parsed.removeDays.length > 0) {
+      removeDays.push(...parsed.removeDays);
+    }
     if (parsed.error) {
       errors.push(parsed.error);
     }
   }
 
-  return { entries, errors };
+  return { entries, removeDays, errors };
 }
 
 /**
@@ -401,7 +408,7 @@ function parseSingleLine(
   line: string,
   year: number,
   month: number,
-): { entries: DraftEntry[]; error: string | null } {
+): { entries: DraftEntry[]; removeDays?: number[]; error: string | null } {
   // 全角→半角変換
   const normalized = line
     .replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xfee0))
@@ -411,6 +418,58 @@ function parseSingleLine(
     .replace(/～/g, '-')
     .replace(/　/g, ' ')
     .trim();
+
+  // ============================================================
+  // 特殊パターン0: 「休み」関連
+  // "3日 休み", "4/3 休み", "3 休み"
+  // ============================================================
+  const restMatch = normalized.match(/^(\d{1,2})(?:\/(\d{1,2}))?日?\s*(?:休み|休日|おやすみ|欠席|お休み)$/);
+  if (restMatch) {
+    const day = restMatch[2] ? parseInt(restMatch[2]) : parseInt(restMatch[1]);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    if (day < 1 || day > daysInMonth) {
+      return { entries: [], error: `${line}: ${day}日は${month}月にありません` };
+    }
+    return { entries: [], removeDays: [day], error: null };
+  }
+
+  // ============================================================
+  // 特殊パターン1: 「平日 8:30-17:30」— 月〜金一括入力
+  // ============================================================
+  const weekdayBulkMatch = normalized.match(/^(?:平日|へいじつ)\s+(.+)$/);
+  if (weekdayBulkMatch) {
+    const timeRange = parseTimeRange(weekdayBulkMatch[1]);
+    if (timeRange) {
+      return buildWeekdayEntries([1, 2, 3, 4, 5], timeRange.start, timeRange.end, year, month, line);
+    }
+  }
+
+  // ============================================================
+  // 特殊パターン2: 「月-金 8:30-17:30」— 曜日範囲指定
+  // "月火水木金 8:30-17:30", "月-金 8:30-17:30", "月水金 8:30-17:30"
+  // ============================================================
+  const DOW_MAP: Record<string, number> = { '日': 0, '月': 1, '火': 2, '水': 3, '木': 4, '金': 5, '土': 6 };
+  
+  const dowRangeMatch = normalized.match(/^([日月火水木金土])\s*-\s*([日月火水木金土])\s+(.+)$/);
+  if (dowRangeMatch) {
+    const fromDow = DOW_MAP[dowRangeMatch[1]];
+    const toDow = DOW_MAP[dowRangeMatch[2]];
+    const timeRange = parseTimeRange(dowRangeMatch[3]);
+    if (fromDow !== undefined && toDow !== undefined && timeRange) {
+      const dows: number[] = [];
+      for (let d = fromDow; d <= toDow; d++) dows.push(d);
+      return buildWeekdayEntries(dows, timeRange.start, timeRange.end, year, month, line);
+    }
+  }
+  
+  const dowListMatch = normalized.match(/^([日月火水木金土]{2,7})\s+(.+)$/);
+  if (dowListMatch) {
+    const dows = [...dowListMatch[1]].map(c => DOW_MAP[c]).filter(d => d !== undefined);
+    const timeRange = parseTimeRange(dowListMatch[2]);
+    if (dows.length > 0 && timeRange) {
+      return buildWeekdayEntries(dows, timeRange.start, timeRange.end, year, month, line);
+    }
+  }
 
   // ============================================================
   // パターン1: 日付範囲 + 時間範囲
@@ -554,6 +613,35 @@ function buildRangeEntries(
   return { entries, error: null };
 }
 
+/**
+ * 指定曜日の全日にエントリを生成
+ * @param dows - 曜日番号の配列 (0=日, 1=月, ..., 6=土)
+ */
+function buildWeekdayEntries(
+  dows: number[],
+  start: string,
+  end: string,
+  year: number,
+  month: number,
+  originalLine: string,
+): { entries: DraftEntry[]; error: string | null } {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const dowSet = new Set(dows);
+  const entries: DraftEntry[] = [];
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dayOfWeek = new Date(year, month - 1, d).getDay();
+    if (dowSet.has(dayOfWeek)) {
+      const validation = validateEntry(d, start, end, year, month);
+      if (validation) {
+        return { entries: [], error: `${originalLine}: ${d}日 - ${validation}` };
+      }
+      entries.push({ day: d, start, end });
+    }
+  }
+  return { entries, error: null };
+}
+
 function normalizeTime(time: string): string {
   const [h, m] = time.split(':');
   return `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
@@ -590,13 +678,17 @@ function validateEntry(
 /**
  * 登降園時間から食事フラグを自動判定
  * 
- * ルール:
- * - 登園が12:00より前 → 昼食あり (lunch_flag=1)
- * - 登園が9:30より前 → 午前おやつあり (am_snack_flag=1)
- * - 降園が15:00以降 → 午後おやつあり (pm_snack_flag=1)
- * - 降園が19:00以降 → 夕食あり (dinner_flag=1)
+ * 木村さん確定ルール (2026-03-10):
+ * - 12時までに登園 → 朝食あり + 昼食あり
+ * - 15時以降に降園 → 午後おやつあり
+ * - 19時以降に登園（夜間保育） → 朝食あり
+ * 
+ * 未確定（木村さんに確認中。現在は0固定）:
+ * - 午前おやつ (am_snack_flag)
+ * - 夕食 (dinner_flag)
  */
 export function calculateMealFlags(start: string, end: string): {
+  breakfast_flag: number;
   lunch_flag: number;
   am_snack_flag: number;
   pm_snack_flag: number;
@@ -605,15 +697,20 @@ export function calculateMealFlags(start: string, end: string): {
   const startMinutes = timeToMinutes(start);
   const endMinutes = timeToMinutes(end);
   
+  // 夜間保育: 19時以降に登園
+  const isNightCare = startMinutes >= timeToMinutes('19:00');
+  
   return {
+    // 12時前に登園 → 朝食あり、または夜間保育 → 朝食あり
+    breakfast_flag: (startMinutes < timeToMinutes('12:00') || isNightCare) ? 1 : 0,
     // 12時前に登園 → 昼食あり
     lunch_flag: startMinutes < timeToMinutes('12:00') ? 1 : 0,
-    // 9:30前に登園 → 午前おやつあり
-    am_snack_flag: startMinutes < timeToMinutes('09:30') ? 1 : 0,
+    // 午前おやつ: 未確定（木村さん確認待ち）→ 0固定
+    am_snack_flag: 0,
     // 15時以降に降園 → 午後おやつあり
     pm_snack_flag: endMinutes >= timeToMinutes('15:00') ? 1 : 0,
-    // 19時以降に降園 → 夕食あり
-    dinner_flag: endMinutes >= timeToMinutes('19:00') ? 1 : 0,
+    // 夕食: 未確定（木村さん確認待ち）→ 0固定
+    dinner_flag: 0,
   };
 }
 
@@ -640,11 +737,12 @@ export async function saveScheduleEntries(
     
     await db
       .prepare(
-        `INSERT INTO schedule_plans (id, child_id, year, month, day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LINE')
+        `INSERT INTO schedule_plans (id, child_id, year, month, day, planned_start, planned_end, breakfast_flag, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LINE')
          ON CONFLICT (child_id, year, month, day) DO UPDATE SET
            planned_start = excluded.planned_start,
            planned_end = excluded.planned_end,
+           breakfast_flag = excluded.breakfast_flag,
            lunch_flag = excluded.lunch_flag,
            am_snack_flag = excluded.am_snack_flag,
            pm_snack_flag = excluded.pm_snack_flag,
@@ -659,6 +757,7 @@ export async function saveScheduleEntries(
         entry.day,
         entry.start,
         entry.end,
+        meals.breakfast_flag,
         meals.lunch_flag,
         meals.am_snack_flag,
         meals.pm_snack_flag,
@@ -745,8 +844,9 @@ export function formatDraftForConfirmation(
     const dow = getDayOfWeek(year, month, e.day);
     const meals = calculateMealFlags(e.start, e.end);
     const mealIcons: string[] = [];
-    if (meals.am_snack_flag) mealIcons.push('朝おやつ');
+    if (meals.breakfast_flag) mealIcons.push('朝食');
     if (meals.lunch_flag) mealIcons.push('昼食');
+    if (meals.am_snack_flag) mealIcons.push('午前おやつ');
     if (meals.pm_snack_flag) mealIcons.push('午後おやつ');
     if (meals.dinner_flag) mealIcons.push('夕食');
     const mealStr = mealIcons.length > 0 ? ` [${mealIcons.join('・')}]` : '';

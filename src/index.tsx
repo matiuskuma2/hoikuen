@@ -44,7 +44,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '8.3',
+    version: '8.4',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Dashboard + Generator (Direct Mode)',
     timestamp: new Date().toISOString(),
