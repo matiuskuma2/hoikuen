@@ -45,7 +45,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '9.0',
+    version: '9.2',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Full TypeScript (No Python dependency)',
     timestamp: new Date().toISOString(),
@@ -1219,7 +1219,7 @@ function mainPage(): string {
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="/static/app.js?v=9.1"></script>
+  <script src="/static/app.js?v=9.2"></script>
 </body>
 </html>`;
 }

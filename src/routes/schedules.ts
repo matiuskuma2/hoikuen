@@ -181,7 +181,11 @@ scheduleRoutes.post('/dashboard', async (c) => {
     return c.json({ error: 'year と month を指定してください' }, 400);
   }
 
+  try {
   const db = c.env.DB;
+  if (!db) {
+    return c.json({ error: 'データベース接続が利用できません。D1バインディングを確認してください。' }, 500);
+  }
   const fiscalYear = getFiscalYear(year, month);
 
   // Get all children
@@ -351,6 +355,13 @@ scheduleRoutes.post('/dashboard', async (c) => {
     submission_report: null,
     source: 'database',
   });
+  } catch (e: any) {
+    console.error('Schedules dashboard error:', e);
+    return c.json({ 
+      error: e.message || 'スケジュールダッシュボード生成エラー',
+      detail: String(e),
+    }, 500);
+  }
 });
 
 // ── Public view: calendar data for a specific child/month ──
