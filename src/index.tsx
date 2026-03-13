@@ -1219,7 +1219,7 @@ function mainPage(): string {
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="/static/app.js?v=9.2"></script>
+  <script src="/static/app.js?v=${Date.now()}"></script>
 </body>
 </html>`;
 }

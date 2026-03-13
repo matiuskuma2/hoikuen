@@ -1644,7 +1644,13 @@ async function startGeneration() {
       } catch {
         errorData = { error: `HTTP ${response.status}: ${response.statusText}` };
       }
-      updateProgress(0, `エラー: ${errorData.error || '生成に失敗しました'}`);
+      // 503 = Generator not available in production
+      if (response.status === 503 || (errorData.error && errorData.error.includes('サンドボックス環境'))) {
+        updateProgress(0, '提出物生成は現在サンドボックス環境でのみ利用可能です');
+        errorData.suggestion = errorData.suggestion || 'ダッシュボード表示機能は本番環境でもご利用いただけます。提出物ZIP生成はサンドボックス環境からご利用ください。';
+      } else {
+        updateProgress(0, `エラー: ${errorData.error || '生成に失敗しました'}`);
+      }
       showErrorResult(errorData);
       return;
     }
