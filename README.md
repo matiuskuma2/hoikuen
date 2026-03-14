@@ -1,6 +1,6 @@
 # あゆっこ保育所 業務自動化システム
 
-> **Version**: 8.2 — 保護者カレンダー・提出状況ダッシュボード (2026-03-07)
+> **Version**: 9.4 — 型定義統合・延長保育閾値統一・コードレビュー完了 (2026-03-14)
 > **GitHub**: https://github.com/matiuskuma2/hoikuen
 
 ---
@@ -206,12 +206,25 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 - **ダッシュボード提出状況** (v8.2)
   - 🟢 提出済/未提出の園児を名前つきで表示（空スロット対応）
   - 🟢 未提出の園児が赤枠で強調表示
+- **コードレビュー Phase 1・2 完了** (v9.3→v9.4)
+  - 🟢 ダッシュボード重複ロジックを `dashboard-builder.ts` に集約
+  - 🟢 `try/catch` ・入力サニタイズ・`parseInt(...,10)` 追加
+  - 🟢 `normalizeName` / `timeToMinutes` 実装統一
+  - 🟢 `types/index.ts` に Parsed* 型を集約（excel-parser.ts の重複型定義削除）
+  - 🟢 `TIME_BOUNDARIES` を types/index.ts に一元化
+    - 延長保育: 18:00 (1080分) / 夜間保育: 20:00 (1200分)
+    - 全モジュール (excel-parser, usage-calculator, schedules) が同一値を参照
+  - 🟢 `warnings_json` の `JSON.parse` 安全化
+  - 🟢 ファイルサイズ上限 50MB チェック追加
 - Cloudflare Production / Staging 環境構築
 - D1 マイグレーション + seed データ投入
 
 ### ⚠️ 要対応
 - LINE Secret / Token ローテーション（本番運用開始前に必須）
 - テストデータを本番DBから除去（実運用開始時）
+- `/api/schedules/view/:childId/:year/:month` の公開保護方式決定
+- アップロード関連のユニットテスト追加
+- 認証・認可の導入
 
 ### 🔨 Phase 2（次フェーズ）
 - 前日17時以降の変更リクエスト処理
@@ -237,7 +250,8 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 
 | 日付 | 内容 |
 |------|------|
-| 2026-03-07 | **v8.2**: 保護者カレンダー `/my/{childId}`, ダッシュボード提出状況概要パネル, LINE管理テーブルにカレンダーリンク追加 |
+| 2026-03-14 | **v9.4**: 型定義統合（Parsed* prefixで excel-parser 独自型を types/index.ts に集約）、延長保育閾値統一（18:00）、schedules.ts のハードコード閾値を TIME_BOUNDARIES に置換 |
+| 2026-03-14 | **v9.3**: コードレビュー Phase 1・2 — ダッシュボード集約・try/catch・サニタイズ・normalizeName統一・ファイルサイズ上限追加 |
 | 2026-03-07 | **v8.1**: LINE管理画面（友だち追加リンク・連携コード発行・提出状況一覧）追加 |
 | 2026-03-07 | **v8.0**: Production/Staging環境構築、LINE実機テスト完了 |
 | 2026-03-06 | **v7.0**: LINE Phase 1 MVP実装 — 会話状態機械・予定入力・UPSERT保存 |
