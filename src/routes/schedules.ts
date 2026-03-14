@@ -11,159 +11,193 @@
 
 import { Hono } from 'hono';
 import type { HonoEnv } from '../types/index';
+import { toMinutes } from '../types/index';
 import { getAgeClassFromBirthDate, getFiscalYear, ageClassToLabel } from '../lib/age-class';
 
 const scheduleRoutes = new Hono<HonoEnv>();
 
 // ── List all schedule plans for a month ──
 scheduleRoutes.get('/', async (c) => {
-  const year = parseInt(c.req.query('year') || '0');
-  const month = parseInt(c.req.query('month') || '0');
+  try {
+    const year = parseInt(c.req.query('year') || '0', 10);
+    const month = parseInt(c.req.query('month') || '0', 10);
 
-  if (!year || !month) {
-    return c.json({ error: 'year と month を指定してください' }, 400);
+    if (isNaN(year) || year < 2000 || year > 2100) {
+      return c.json({ error: 'year を正しく指定してください (2000-2100)' }, 400);
+    }
+    if (isNaN(month) || month < 1 || month > 12) {
+      return c.json({ error: 'month を正しく指定してください (1-12)' }, 400);
+    }
+
+    const db = c.env.DB;
+    if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
+
+    const result = await db.prepare(`
+      SELECT sp.*, c.name, c.birth_date, c.age_class, c.enrollment_type
+      FROM schedule_plans sp
+      JOIN children c ON sp.child_id = c.id
+      WHERE sp.year = ? AND sp.month = ?
+      ORDER BY sp.day ASC, c.name ASC
+    `).bind(year, month).all();
+
+    return c.json({
+      plans: result.results,
+      year,
+      month,
+      total: result.results.length,
+    });
+  } catch (e: any) {
+    console.error('Schedules list error:', e);
+    return c.json({ error: e.message || 'スケジュール一覧取得エラー' }, 500);
   }
-
-  const db = c.env.DB;
-
-  const result = await db.prepare(`
-    SELECT sp.*, c.name, c.birth_date, c.age_class, c.enrollment_type
-    FROM schedule_plans sp
-    JOIN children c ON sp.child_id = c.id
-    WHERE sp.year = ? AND sp.month = ?
-    ORDER BY sp.day ASC, c.name ASC
-  `).bind(year, month).all();
-
-  return c.json({
-    plans: result.results,
-    year,
-    month,
-    total: result.results.length,
-  });
 });
 
 // ── List plans for a single child in a month ──
 scheduleRoutes.get('/:childId', async (c) => {
-  const childId = c.req.param('childId');
-  const year = parseInt(c.req.query('year') || '0');
-  const month = parseInt(c.req.query('month') || '0');
+  try {
+    const childId = c.req.param('childId');
+    const year = parseInt(c.req.query('year') || '0', 10);
+    const month = parseInt(c.req.query('month') || '0', 10);
 
-  if (!year || !month) {
-    return c.json({ error: 'year と month を指定してください' }, 400);
+    if (isNaN(year) || year < 2000 || year > 2100) {
+      return c.json({ error: 'year を正しく指定してください (2000-2100)' }, 400);
+    }
+    if (isNaN(month) || month < 1 || month > 12) {
+      return c.json({ error: 'month を正しく指定してください (1-12)' }, 400);
+    }
+
+    const db = c.env.DB;
+    if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
+
+    const result = await db.prepare(`
+      SELECT * FROM schedule_plans
+      WHERE child_id = ? AND year = ? AND month = ?
+      ORDER BY day ASC
+    `).bind(childId, year, month).all();
+
+    return c.json({
+      plans: result.results,
+      child_id: childId,
+      year,
+      month,
+    });
+  } catch (e: any) {
+    console.error('Schedules child list error:', e);
+    return c.json({ error: e.message || 'スケジュール取得エラー' }, 500);
   }
-
-  const db = c.env.DB;
-
-  const result = await db.prepare(`
-    SELECT * FROM schedule_plans
-    WHERE child_id = ? AND year = ? AND month = ?
-    ORDER BY day ASC
-  `).bind(childId, year, month).all();
-
-  return c.json({
-    plans: result.results,
-    child_id: childId,
-    year,
-    month,
-  });
 });
 
 // ── Upsert schedule plans (bulk) ──
 // Body: { child_id, year, month, days: [{ day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag }] }
 scheduleRoutes.post('/', async (c) => {
-  let body: {
-    child_id: string;
-    year: number;
-    month: number;
-    days: Array<{
-      day: number;
-      planned_start?: string | null;
-      planned_end?: string | null;
-      lunch_flag?: number;
-      am_snack_flag?: number;
-      pm_snack_flag?: number;
-      dinner_flag?: number;
-    }>;
-  };
-
   try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'リクエストのJSONが不正です' }, 400);
-  }
+    let body: {
+      child_id: string;
+      year: number;
+      month: number;
+      days: Array<{
+        day: number;
+        planned_start?: string | null;
+        planned_end?: string | null;
+        lunch_flag?: number;
+        am_snack_flag?: number;
+        pm_snack_flag?: number;
+        dinner_flag?: number;
+      }>;
+    };
 
-  if (!body.child_id || !body.year || !body.month || !Array.isArray(body.days)) {
-    return c.json({ error: 'child_id, year, month, days[] が必要です' }, 400);
-  }
-
-  const db = c.env.DB;
-
-  // Verify child exists
-  const child = await db.prepare('SELECT id FROM children WHERE id = ?').bind(body.child_id).first();
-  if (!child) {
-    return c.json({ error: '園児が見つかりません' }, 404);
-  }
-
-  let upserted = 0;
-  let deleted = 0;
-
-  for (const dayData of body.days) {
-    const { day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag } = dayData;
-    
-    if (!day || day < 1 || day > 31) continue;
-
-    // If no start/end time, delete this plan entry (child is not coming this day)
-    if (!planned_start && !planned_end) {
-      await db.prepare(`
-        DELETE FROM schedule_plans 
-        WHERE child_id = ? AND year = ? AND month = ? AND day = ?
-      `).bind(body.child_id, body.year, body.month, day).run();
-      deleted++;
-      continue;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'リクエストのJSONが不正です' }, 400);
     }
 
-    const planId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+    if (!body.child_id || !body.year || !body.month || !Array.isArray(body.days)) {
+      return c.json({ error: 'child_id, year, month, days[] が必要です' }, 400);
+    }
 
-    await db.prepare(`
-      INSERT INTO schedule_plans (id, child_id, year, month, day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UI入力')
-      ON CONFLICT(child_id, year, month, day) DO UPDATE SET
-        planned_start = excluded.planned_start,
-        planned_end = excluded.planned_end,
-        lunch_flag = excluded.lunch_flag,
-        am_snack_flag = excluded.am_snack_flag,
-        pm_snack_flag = excluded.pm_snack_flag,
-        dinner_flag = excluded.dinner_flag,
-        source_file = 'UI入力'
-    `).bind(
-      planId, body.child_id, body.year, body.month, day,
-      planned_start || null, planned_end || null,
-      lunch_flag ?? 0, am_snack_flag ?? 0, pm_snack_flag ?? 0, dinner_flag ?? 0
-    ).run();
-    upserted++;
+    const db = c.env.DB;
+    if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
+
+    // Verify child exists
+    const child = await db.prepare('SELECT id FROM children WHERE id = ?').bind(body.child_id).first();
+    if (!child) {
+      return c.json({ error: '園児が見つかりません' }, 404);
+    }
+
+    let upserted = 0;
+    let deleted = 0;
+
+    for (const dayData of body.days) {
+      const { day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag } = dayData;
+      
+      if (!day || day < 1 || day > 31) continue;
+
+      // If no start/end time, delete this plan entry (child is not coming this day)
+      if (!planned_start && !planned_end) {
+        await db.prepare(`
+          DELETE FROM schedule_plans 
+          WHERE child_id = ? AND year = ? AND month = ? AND day = ?
+        `).bind(body.child_id, body.year, body.month, day).run();
+        deleted++;
+        continue;
+      }
+
+      const planId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+
+      await db.prepare(`
+        INSERT INTO schedule_plans (id, child_id, year, month, day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UI入力')
+        ON CONFLICT(child_id, year, month, day) DO UPDATE SET
+          planned_start = excluded.planned_start,
+          planned_end = excluded.planned_end,
+          lunch_flag = excluded.lunch_flag,
+          am_snack_flag = excluded.am_snack_flag,
+          pm_snack_flag = excluded.pm_snack_flag,
+          dinner_flag = excluded.dinner_flag,
+          source_file = 'UI入力'
+      `).bind(
+        planId, body.child_id, body.year, body.month, day,
+        planned_start || null, planned_end || null,
+        lunch_flag ?? 0, am_snack_flag ?? 0, pm_snack_flag ?? 0, dinner_flag ?? 0
+      ).run();
+      upserted++;
+    }
+
+    return c.json({ message: '予定を保存しました', upserted, deleted });
+  } catch (e: any) {
+    console.error('Schedules upsert error:', e);
+    return c.json({ error: e.message || '予定保存エラー' }, 500);
   }
-
-  return c.json({ message: '予定を保存しました', upserted, deleted });
 });
 
 // ── Delete all schedule plans for a child/month ──
 scheduleRoutes.delete('/:childId', async (c) => {
-  const childId = c.req.param('childId');
-  const year = parseInt(c.req.query('year') || '0');
-  const month = parseInt(c.req.query('month') || '0');
+  try {
+    const childId = c.req.param('childId');
+    const year = parseInt(c.req.query('year') || '0', 10);
+    const month = parseInt(c.req.query('month') || '0', 10);
 
-  if (!year || !month) {
-    return c.json({ error: 'year と month を指定してください' }, 400);
+    if (isNaN(year) || year < 2000 || year > 2100) {
+      return c.json({ error: 'year を正しく指定してください (2000-2100)' }, 400);
+    }
+    if (isNaN(month) || month < 1 || month > 12) {
+      return c.json({ error: 'month を正しく指定してください (1-12)' }, 400);
+    }
+
+    const db = c.env.DB;
+    if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
+
+    await db.prepare(`
+      DELETE FROM schedule_plans
+      WHERE child_id = ? AND year = ? AND month = ?
+    `).bind(childId, year, month).run();
+
+    return c.json({ message: '予定を削除しました', child_id: childId, year, month });
+  } catch (e: any) {
+    console.error('Schedules delete error:', e);
+    return c.json({ error: e.message || '予定削除エラー' }, 500);
   }
-
-  const db = c.env.DB;
-
-  await db.prepare(`
-    DELETE FROM schedule_plans
-    WHERE child_id = ? AND year = ? AND month = ?
-  `).bind(childId, year, month).run();
-
-  return c.json({ message: '予定を削除しました', child_id: childId, year, month });
 });
 
 // ── Dashboard from DB schedule data ──
@@ -256,8 +290,13 @@ scheduleRoutes.post('/dashboard', async (c) => {
       if (s.dinner_flag) dinnerCount++;
 
       // Check time zones
-      const startMin = timeToMinutes(s.planned_start as string);
-      const endMin = timeToMinutes(s.planned_end as string);
+      // ⚠️ 懸念点: 延長保育の閾値について
+      // excel-parser.ts: ext_start=1200(20:00), night=1260(21:00)
+      // usage-calculator.ts: extension_start=1080(18:00), night=1200(20:00)
+      // schedules.ts: extension=1200(20:00), night=1260(21:00)
+      // TODO: 要確認 — ビジネスルールを統一する必要あり（18:00 or 20:00）
+      const startMin = safeTimeToMinutes(s.planned_start as string);
+      const endMin = safeTimeToMinutes(s.planned_end as string);
       if (startMin !== null && startMin < 450) earlyMorningCount++; // before 7:30
       if (endMin !== null && endMin > 1200) extensionCount++; // after 20:00
       if (endMin !== null && endMin > 1260) nightCount++; // after 21:00
@@ -281,6 +320,7 @@ scheduleRoutes.post('/dashboard', async (c) => {
         has_am_snack: s.am_snack_flag ? 1 : 0,
         has_pm_snack: s.pm_snack_flag ? 1 : 0,
         has_dinner: s.dinner_flag ? 1 : 0,
+        // TODO: 要確認 — 閾値を TIME_BOUNDARIES 定数に統一すべき
         is_early_morning: startMin !== null && startMin < 450 ? 1 : 0,
         is_extension: endMin !== null && endMin > 1200 ? 1 : 0,
         is_night: endMin !== null && endMin > 1260 ? 1 : 0,
@@ -366,17 +406,19 @@ scheduleRoutes.post('/dashboard', async (c) => {
 
 // ── Public view: calendar data for a specific child/month ──
 // GET /api/schedules/view/:childId/:year/:month
-// No auth required — for parents to view their own submitted schedule
+// Note: childId is a 16-char hex UUID which provides sufficient entropy against brute-force
 scheduleRoutes.get('/view/:childId/:year/:month', async (c) => {
-  const childId = c.req.param('childId');
-  const year = parseInt(c.req.param('year') || '0');
-  const month = parseInt(c.req.param('month') || '0');
+  try {
+    const childId = c.req.param('childId');
+    const year = parseInt(c.req.param('year') || '0', 10);
+    const month = parseInt(c.req.param('month') || '0', 10);
 
-  if (!year || !month || month < 1 || month > 12) {
-    return c.json({ error: '無効な年月です' }, 400);
-  }
+    if (isNaN(year) || year < 2000 || year > 2100 || isNaN(month) || month < 1 || month > 12) {
+      return c.json({ error: '無効な年月です' }, 400);
+    }
 
-  const db = c.env.DB;
+    const db = c.env.DB;
+    if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
 
   // Get child info
   const child = await db.prepare(
@@ -437,14 +479,23 @@ scheduleRoutes.get('/view/:childId/:year/:month', async (c) => {
     total_planned_days: result.results.length,
     days,
   });
+  } catch (e: any) {
+    console.error('Schedules view error:', e);
+    return c.json({ error: e.message || 'スケジュール表示エラー' }, 500);
+  }
 });
 
-function timeToMinutes(timeStr: string | null): number | null {
+/**
+ * Null-safe wrapper around toMinutes from types/index.ts
+ * toMinutes は string を受け取り number を返すが、null チェックが必要なため
+ * schedules.ts 用のラッパーを提供
+ */
+function safeTimeToMinutes(timeStr: string | null): number | null {
   if (!timeStr) return null;
   const parts = timeStr.split(':');
   if (parts.length < 2) return null;
-  const h = parseInt(parts[0]);
-  const m = parseInt(parts[1]);
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
   if (isNaN(h) || isNaN(m)) return null;
   return h * 60 + m;
 }

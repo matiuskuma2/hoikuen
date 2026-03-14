@@ -2,22 +2,17 @@
  * Name Normalization & Matching Engine
  * 
  * Handles name variations across Lukumi, schedule plans, roster, billing
+ * 
+ * ⚠️ 懸念点: normalizeName は excel-parser.ts の完全版を正規の実装とし、
+ * ここでは re-export する。二重実装による不一致リスクを排除。
  */
 
 import type { Child } from '../types/index';
+// 正規の normalizeName を excel-parser から import
+import { normalizeName } from './excel-parser';
 
-/**
- * Normalize a Japanese name for comparison
- * - Full-width space → half-width space
- * - Multiple spaces → single space
- * - Trim leading/trailing whitespace
- */
-export function normalizeName(name: string): string {
-  return name
-    .replace(/\u3000/g, ' ')  // full-width space → half-width
-    .replace(/\s+/g, ' ')     // collapse multiple spaces
-    .trim();
-}
+// re-export for backward compatibility
+export { normalizeName };
 
 export interface MatchResult {
   child: Child | null;
@@ -85,7 +80,7 @@ export function normalizeTime(timeStr: string | null | undefined): string | null
   // Handle HH:MM or HH:MM:SS
   const match = str.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
   if (match) {
-    const h = parseInt(match[1]);
+    const h = parseInt(match[1], 10);
     const m = match[2];
     return `${h}:${m}`;
   }

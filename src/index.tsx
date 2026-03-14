@@ -18,7 +18,7 @@ import uploadRoutes from './routes/upload';
 
 const app = new Hono<HonoEnv>();
 
-// CORS — restrict origins in production, allow all in development
+// CORS — restrict origins; reject unknown origins
 app.use('/api/*', cors({
   origin: (origin) => {
     // Allow same-origin requests (origin is null/empty for same-origin)
@@ -27,11 +27,12 @@ app.use('/api/*', cors({
     if (origin.endsWith('.pages.dev') ||
         origin.includes('localhost') ||
         origin.includes('127.0.0.1') ||
-        origin.includes('.sandbox.novita.ai')) {
+        origin.includes('.sandbox.novita.ai') ||
+        origin.includes('.genspark.ai')) {
       return origin;
     }
-    // Default: reflect origin (for first-party usage)
-    return origin;
+    // Reject unknown origins
+    return '';
   },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
@@ -45,7 +46,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '9.2',
+    version: '9.3',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Full TypeScript (No Python dependency)',
     timestamp: new Date().toISOString(),
@@ -127,7 +128,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v8.2</p>
+          <p class="text-xs text-gray-500">業務自動化システム v9.3</p>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -1234,10 +1235,17 @@ app.get('/', (c) => {
 // URL: /my/:childId/:year/:month
 // ═══════════════════════════════════════════
 app.get('/my/:childId/:year?/:month?', (c) => {
-  const childId = c.req.param('childId');
+  // Sanitize childId to prevent XSS (allow only alphanumeric + hyphen + underscore)
+  const rawChildId = c.req.param('childId') || '';
+  const childId = rawChildId.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!childId || childId !== rawChildId) {
+    return c.text('Invalid child ID', 400);
+  }
   const now = new Date();
-  const year = c.req.param('year') || String(now.getFullYear());
-  const month = c.req.param('month') || String(now.getMonth() + 2 > 12 ? 1 : now.getMonth() + 2);
+  const rawYear = c.req.param('year');
+  const rawMonth = c.req.param('month');
+  const year = rawYear && /^\d{4}$/.test(rawYear) ? rawYear : String(now.getFullYear());
+  const month = rawMonth && /^\d{1,2}$/.test(rawMonth) ? rawMonth : String(now.getMonth() + 2 > 12 ? 1 : now.getMonth() + 2);
   return c.html(mySchedulePage(childId, year, month));
 });
 

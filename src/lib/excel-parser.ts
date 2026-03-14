@@ -529,11 +529,18 @@ function safeInt(val: any): number | null {
   return isNaN(n) ? null : n;
 }
 
+/** excel-parser 内部用 timeToMinutes (null 安全版)
+ * types/index.ts の toMinutes は non-null string のみ受け付けるため、
+ * パーサー内部では null チェック込みのこちらを使用
+ */
 function timeToMinutes(t: string | null): number | null {
   if (!t) return null;
   const parts = t.split(':');
   if (parts.length < 2) return null;
-  return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
 }
 
 function parseSingleSheet(ws: XLSX.WorkSheet, filename: string, sheetLabel: string, targetYear: number, targetMonth: number): {
@@ -744,11 +751,15 @@ export interface UsageFact {
   actual_checkout: string | null;
 }
 
+// ⚠️ 懸念点: 延長保育閾値が usage-calculator.ts の PricingRules と不整合
+// excel-parser: ext_start=1200(20:00) — ダッシュボード表示用
+// usage-calculator: extension_start=1080(18:00) — 請求計算用(PricingRules準拠)
+// TODO: 要確認 — ビジネスルールを確認し統一する必要あり
 const TIME_BOUNDARIES = {
   early_start: 420, // 07:00
   early_end: 450,   // 07:30
-  ext_start: 1200,  // 20:00
-  night_start: 1260, // 21:00
+  ext_start: 1200,  // 20:00 ← usage-calculator では 18:00 (PricingRules)
+  night_start: 1260, // 21:00 ← usage-calculator では 20:00 (PricingRules)
 };
 
 function toMin(t: string | null): number {
