@@ -1,6 +1,6 @@
 # あゆっこ保育所 業務自動化システム
 
-> **Version**: 9.4 — 型定義統合・延長保育閾値統一・コードレビュー完了 (2026-03-14)
+> **Version**: 9.5 — URL保護・ユニットテスト85件・nursery_id一元化 (2026-03-14)
 > **GitHub**: https://github.com/matiuskuma2/hoikuen
 
 ---
@@ -13,7 +13,7 @@
 | **Staging** | https://ayukko-stg.pages.dev | ✅ 稼働中 |
 | LINE Health | https://ayukko-prod.pages.dev/api/line/health | ✅ |
 | LINE Webhook | https://ayukko-prod.pages.dev/api/line/webhook | ✅ 実機テスト済み |
-| 保護者カレンダー | https://ayukko-prod.pages.dev/my/{childId} | ✅ NEW |
+| 保護者カレンダー | https://ayukko-prod.pages.dev/my/{viewToken} | ✅ view_token 保護済み |
 
 ---
 
@@ -124,8 +124,8 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 | Method | Path | 説明 |
 |--------|------|------|
 | GET | `/` | メインUI (ダッシュボード) |
-| GET | `/my/:childId` | 保護者向けカレンダー（月別予定一覧） |
-| GET | `/my/:childId/:year/:month` | 保護者向けカレンダー（年月指定） |
+| GET | `/my/:viewToken` | 保護者向けカレンダー（view_token認証） |
+| GET | `/my/:viewToken/:year/:month` | 保護者向けカレンダー（年月指定） |
 | GET | `/api/health` | ヘルスチェック |
 | GET | `/api/config` | Generator URL設定 |
 
@@ -133,16 +133,17 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 | Method | Path | 説明 |
 |--------|------|------|
 | GET | `/api/children` | 園児一覧 |
-| POST | `/api/children` | 園児登録 |
+| POST | `/api/children` | 園児登録（view_token 自動生成） |
 | PUT | `/api/children/:id` | 園児更新 |
 | DELETE | `/api/children/:id` | 園児削除 |
+| POST | `/api/children/:id/regenerate-token` | view_token 再発行 |
 
 ### 予定管理
 | Method | Path | 説明 |
 |--------|------|------|
 | POST | `/api/schedules/dashboard` | ダッシュボード用データ取得（提出状況概要含む） |
 | POST | `/api/schedules/upsert` | 予定UPSERT |
-| GET | `/api/schedules/view/:childId/:year/:month` | 保護者カレンダーAPI |
+| GET | `/api/schedules/view/:token/:year/:month` | 保護者カレンダーAPI（view_token or childId） |
 | GET | `/api/schedules/:childId/:year/:month` | 園児別予定取得 |
 
 ### LINE連携
@@ -200,6 +201,19 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
   - 🟢 連携コード発行・一覧表示（使用状況・有効期限・使用者）
   - 🟢 月次提出状況（全園児のLINE連携/提出済み/未提出を一覧表示）
   - 🟢 提出状況サマリー（園児数・連携済・提出済・未提出のカウント）
+- **URL保護** (v9.5)
+  - 🟢 公開カレンダーURLを view_token (32文字ランダム) で保護
+  - 🟢 `/my/:viewToken` / `/api/schedules/view/:token/:year/:month` 対応
+  - 🟢 childId後方互換維持（既存リンクが動作）
+  - 🟢 `POST /api/children/:id/regenerate-token` でトークン再発行可能
+- **ユニットテスト** (v9.5)
+  - 🟢 Vitest v4.1.0 導入・全85件パス
+  - 🟢 閾値境界テスト (17:59/18:00/18:01/19:59/20:00/20:01)
+  - 🟢 parseLukumi / parseSchedule / computeUsageFacts / buildDashboardFromFormData
+  - 🟢 normalizeName 全角⇔半角変換テスト
+- **nursery_id 一元化** (v9.5)
+  - 🟢 `DEFAULT_NURSERY_ID` を types/index.ts に一元定義
+  - 🟢 children/jobs/schedules/templates/line 全ファイルのハードコード排除
 - **保護者カレンダー** (v8.2)
   - 🟢 園児別カレンダーページ `/my/{childId}` — 月ナビゲーション・日別一覧・食事バッジ
   - 🟢 カレンダーURLを管理画面の提出状況テーブルからリンク
@@ -222,9 +236,8 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 ### ⚠️ 要対応
 - LINE Secret / Token ローテーション（本番運用開始前に必須）
 - テストデータを本番DBから除去（実運用開始時）
-- `/api/schedules/view/:childId/:year/:month` の公開保護方式決定
-- アップロード関連のユニットテスト追加
-- 認証・認可の導入
+- 認証・認可の導入（管理画面保護）
+- 本番環境へ migration 0004_view_token.sql の適用
 
 ### 🔨 Phase 2（次フェーズ）
 - 前日17時以降の変更リクエスト処理
@@ -250,6 +263,7 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 
 | 日付 | 内容 |
 |------|------|
+| 2026-03-14 | **v9.5**: URL保護（view_token 32文字）、ユニットテスト85件追加（Vitest）、nursery_id一元化（DEFAULT_NURSERY_ID） |
 | 2026-03-14 | **v9.4**: 型定義統合（Parsed* prefixで excel-parser 独自型を types/index.ts に集約）、延長保育閾値統一（18:00）、schedules.ts のハードコード閾値を TIME_BOUNDARIES に置換 |
 | 2026-03-14 | **v9.3**: コードレビュー Phase 1・2 — ダッシュボード集約・try/catch・サニタイズ・normalizeName統一・ファイルサイズ上限追加 |
 | 2026-03-07 | **v8.1**: LINE管理画面（友だち追加リンク・連携コード発行・提出状況一覧）追加 |
