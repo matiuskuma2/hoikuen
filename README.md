@@ -9,11 +9,11 @@
 
 | 環境 | URL | 状態 |
 |------|-----|------|
-| **Production** | https://ayukko-prod.pages.dev | ✅ 稼働中 |
-| **Staging** | https://ayukko-stg.pages.dev | ✅ 稼働中 |
-| LINE Health | https://ayukko-prod.pages.dev/api/line/health | ✅ |
-| LINE Webhook | https://ayukko-prod.pages.dev/api/line/webhook | ✅ 実機テスト済み |
-| 保護者カレンダー | https://ayukko-prod.pages.dev/my/{viewToken} | ✅ view_token 保護済み |
+| **Production** | https://ayukko-prod-2fx.pages.dev | ✅ v9.5 稼働中 |
+| **Staging** | https://ayukko-stg-1gv.pages.dev | ✅ v9.5 稼働中 |
+| LINE Health | https://ayukko-prod-2fx.pages.dev/api/line/health | ✅ |
+| LINE Webhook | https://ayukko-prod-2fx.pages.dev/api/line/webhook | ⚠️ 要Webhook URL更新 |
+| 保護者カレンダー | https://ayukko-prod-2fx.pages.dev/my/{viewToken} | ✅ view_token 保護済み |
 
 ---
 
@@ -47,10 +47,11 @@ LINE経由で保護者から利用予定を収集するシステム。
 
 | リソース | Staging | Production |
 |---------|---------|------------|
-| Pages | `ayukko-stg` | `ayukko-prod` |
-| D1 | `ayukko-staging` (`285fa9a7...`) | `ayukko-production` (`baef24d6...`) |
+| Pages | `ayukko-stg` → `ayukko-stg-1gv.pages.dev` | `ayukko-prod` → `ayukko-prod-2fx.pages.dev` |
+| D1 | `ayukko-staging` (`6352b540...`) | `ayukko-production` (`92726720...`) |
 | R2 | `ayukko-files-stg` | `ayukko-files-prod` |
-| LINE Secrets | ✅ 設定済み | ✅ 設定済み |
+| Account | `1eb9b7b82253bdac108f0c482dd1c368` | 同左 |
+| LINE Secrets | ⚠️ 要設定 | ⚠️ 要設定（新アカウント） |
 
 ---
 
@@ -114,7 +115,7 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 |------|-----|
 | Channel ID | `2005879095` |
 | 友だち追加リンク | https://lin.ee/H02sZM5 |
-| Webhook URL | `https://ayukko-prod.pages.dev/api/line/webhook` |
+| Webhook URL | `https://ayukko-prod-2fx.pages.dev/api/line/webhook` ⚠️ LINE Developers で更新が必要 |
 
 ---
 
@@ -234,10 +235,10 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 - D1 マイグレーション + seed データ投入
 
 ### ⚠️ 要対応
+- **LINE Webhook URL更新**: LINE Developers Console で Webhook URL を `https://ayukko-prod-2fx.pages.dev/api/line/webhook` に変更が必要
 - LINE Secret / Token ローテーション（本番運用開始前に必須）
-- テストデータを本番DBから除去（実運用開始時）
 - 認証・認可の導入（管理画面保護）
-- 本番環境へ migration 0004_view_token.sql の適用
+- カスタムドメイン設定（オプション）
 
 ### 🔨 Phase 2（次フェーズ）
 - 前日17時以降の変更リクエスト処理
@@ -263,7 +264,7 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 
 | 日付 | 内容 |
 |------|------|
-| 2026-03-14 | **v9.5**: URL保護（view_token 32文字）、ユニットテスト85件追加（Vitest）、nursery_id一元化（DEFAULT_NURSERY_ID） |
+| 2026-03-14 | **v9.5**: URL保護（view_token 32文字）、ユニットテスト85件追加（Vitest）、nursery_id一元化（DEFAULT_NURSERY_ID）、新Cloudflareアカウントにデプロイ完了（本番+ステージング）、migration 0004適用済み |
 | 2026-03-14 | **v9.4**: 型定義統合（Parsed* prefixで excel-parser 独自型を types/index.ts に集約）、延長保育閾値統一（18:00）、schedules.ts のハードコード閾値を TIME_BOUNDARIES に置換 |
 | 2026-03-14 | **v9.3**: コードレビュー Phase 1・2 — ダッシュボード集約・try/catch・サニタイズ・normalizeName統一・ファイルサイズ上限追加 |
 | 2026-03-07 | **v8.1**: LINE管理画面（友だち追加リンク・連携コード発行・提出状況一覧）追加 |
