@@ -12,7 +12,7 @@
  */
 
 import { Hono } from 'hono';
-import type { HonoEnv } from '../types/index';
+import { DEFAULT_NURSERY_ID, type HonoEnv } from '../types/index';
 import {
   verifySignature,
   replyMessage,
@@ -792,9 +792,9 @@ lineRoutes.post('/link-codes', async (c) => {
   await db
     .prepare(
       `INSERT INTO link_codes (id, code, nursery_id, expires_at, created_at)
-       VALUES (?, ?, 'ayukko_001', ?, datetime('now'))`,
+       VALUES (?, ?, ?, ?, datetime('now'))`
     )
-    .bind(id, code, expiresAt)
+    .bind(id, code, DEFAULT_NURSERY_ID, expiresAt)
     .run();
 
   return c.json({ id, code, expires_at: expiresAt });

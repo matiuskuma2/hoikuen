@@ -10,7 +10,7 @@
  */
 
 import { Hono } from 'hono';
-import type { HonoEnv } from '../types/index';
+import { DEFAULT_NURSERY_ID, type HonoEnv } from '../types/index';
 import { buildDashboardFromFormData } from '../lib/dashboard-builder';
 
 // Generator URL: configurable via environment variable, fallback to local
@@ -53,8 +53,7 @@ jobRoutes.post('/', async (c) => {
 
     const db = c.env.DB;
     const jobId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
-    // TODO: 要確認 — nursery_id はハードコード。マルチテナント時に環境変数化が必要
-    const nurseryId = 'ayukko_001';
+    const nurseryId = DEFAULT_NURSERY_ID;
 
     await db.prepare(`
       INSERT INTO jobs (id, nursery_id, year, month, status)

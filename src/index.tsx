@@ -46,7 +46,7 @@ app.get('/favicon.ico', (c) => new Response(null, { status: 204 }));
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    version: '9.4',
+    version: '9.5',
     system: '滋賀医科大学学内保育所 あゆっこ 業務自動化システム',
     phase: 'Full TypeScript (No Python dependency)',
     timestamp: new Date().toISOString(),
@@ -128,7 +128,7 @@ function mainPage(): string {
         </div>
         <div>
           <h1 class="text-base font-bold text-gray-800">滋賀医科大学学内保育所 あゆっこ</h1>
-          <p class="text-xs text-gray-500">業務自動化システム v9.4</p>
+          <p class="text-xs text-gray-500">業務自動化システム v9.5</p>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -1231,25 +1231,25 @@ app.get('/', (c) => {
 
 // ═══════════════════════════════════════════
 // Parent-facing schedule calendar view
-// URL: /my/:childId  (defaults to current/next month)
-// URL: /my/:childId/:year/:month
+// URL: /my/:token  (view_token or childId, defaults to current/next month)
+// URL: /my/:token/:year/:month
 // ═══════════════════════════════════════════
-app.get('/my/:childId/:year?/:month?', (c) => {
-  // Sanitize childId to prevent XSS (allow only alphanumeric + hyphen + underscore)
-  const rawChildId = c.req.param('childId') || '';
-  const childId = rawChildId.replace(/[^a-zA-Z0-9_-]/g, '');
-  if (!childId || childId !== rawChildId) {
-    return c.text('Invalid child ID', 400);
+app.get('/my/:token/:year?/:month?', (c) => {
+  // Sanitize token to prevent XSS (allow only alphanumeric + hyphen + underscore)
+  const rawToken = c.req.param('token') || '';
+  const token = rawToken.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!token || token !== rawToken) {
+    return c.text('Invalid token', 400);
   }
   const now = new Date();
   const rawYear = c.req.param('year');
   const rawMonth = c.req.param('month');
   const year = rawYear && /^\d{4}$/.test(rawYear) ? rawYear : String(now.getFullYear());
   const month = rawMonth && /^\d{1,2}$/.test(rawMonth) ? rawMonth : String(now.getMonth() + 2 > 12 ? 1 : now.getMonth() + 2);
-  return c.html(mySchedulePage(childId, year, month));
+  return c.html(mySchedulePage(token, year, month));
 });
 
-function mySchedulePage(childId: string, defaultYear: string, defaultMonth: string): string {
+function mySchedulePage(token: string, defaultYear: string, defaultMonth: string): string {
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -1345,7 +1345,7 @@ function mySchedulePage(childId: string, defaultYear: string, defaultMonth: stri
   </main>
 
   <script>
-    const CHILD_ID = '${childId}';
+    const VIEW_TOKEN = '${token}';
     let currentYear = parseInt('${defaultYear}');
     let currentMonth = parseInt('${defaultMonth}');
     let scheduleData = null;
@@ -1364,7 +1364,7 @@ function mySchedulePage(childId: string, defaultYear: string, defaultMonth: stri
       document.getElementById('month-title').textContent = currentYear + '年' + currentMonth + '月';
 
       try {
-        const res = await fetch('/api/schedules/view/' + CHILD_ID + '/' + currentYear + '/' + currentMonth);
+        const res = await fetch('/api/schedules/view/' + VIEW_TOKEN + '/' + currentYear + '/' + currentMonth);
         if (!res.ok) {
           const err = await res.json();
           throw new Error(err.error || 'HTTP ' + res.status);

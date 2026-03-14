@@ -5,14 +5,14 @@
  */
 
 import { Hono } from 'hono';
-import type { HonoEnv } from '../types/index';
+import { DEFAULT_NURSERY_ID, type HonoEnv } from '../types/index';
 
 const templateRoutes = new Hono<HonoEnv>();
 
 // List templates
 templateRoutes.get('/', async (c) => {
   const db = c.env.DB;
-  const nurseryId = 'ayukko_001';
+  const nurseryId = DEFAULT_NURSERY_ID;
 
   const result = await db.prepare(`
     SELECT id, template_type, file_name, uploaded_at 
@@ -26,7 +26,7 @@ templateRoutes.get('/', async (c) => {
 templateRoutes.post('/upload', async (c) => {
   const db = c.env.DB;
   const r2 = c.env.R2;
-  const nurseryId = 'ayukko_001';
+  const nurseryId = DEFAULT_NURSERY_ID;
 
   const formData = await c.req.formData();
   const file = formData.get('file') as File | null;
@@ -68,7 +68,7 @@ templateRoutes.post('/upload', async (c) => {
 // Get pricing rules
 templateRoutes.get('/pricing', async (c) => {
   const db = c.env.DB;
-  const nurseryId = 'ayukko_001';
+  const nurseryId = DEFAULT_NURSERY_ID;
 
   const result = await db.prepare(`
     SELECT * FROM pricing_rules WHERE nursery_id = ? ORDER BY fiscal_year DESC LIMIT 1
@@ -87,7 +87,7 @@ templateRoutes.get('/pricing', async (c) => {
 // Set pricing rules
 templateRoutes.post('/pricing', async (c) => {
   const db = c.env.DB;
-  const nurseryId = 'ayukko_001';
+  const nurseryId = DEFAULT_NURSERY_ID;
 
   let body: Record<string, unknown>;
   try {

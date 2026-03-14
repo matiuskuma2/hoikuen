@@ -23,6 +23,14 @@ export type HonoEnv = {
 };
 
 // ═══════════════════════════════════════════════
+// Default Nursery ID — ハードコード排除
+// 将来マルチテナント対応時は env.NURSERY_ID に移行
+// ═══════════════════════════════════════════════
+
+/** デフォルトの nursery_id（全ルートで共通使用） */
+export const DEFAULT_NURSERY_ID = 'ayukko_001';
+
+// ═══════════════════════════════════════════════
 // Time Boundaries — 全モジュール共通の閾値定数
 // excel-parser.ts, usage-calculator.ts, schedules.ts で同じ値を使う
 // ═══════════════════════════════════════════════
@@ -88,6 +96,7 @@ export interface Child {
   collection_method: string;
   bank_info_json: string | null;
   is_allergy: number;
+  view_token: string | null;
   created_at: string;
   updated_at: string;
 }

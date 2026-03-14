@@ -10,7 +10,7 @@
  */
 
 import { Hono } from 'hono';
-import type { HonoEnv } from '../types/index';
+import { DEFAULT_NURSERY_ID, type HonoEnv } from '../types/index';
 import { toMinutes, safeToMinutes, TIME_BOUNDARIES } from '../types/index';
 import { getAgeClassFromBirthDate, getFiscalYear, ageClassToLabel } from '../lib/age-class';
 
@@ -224,11 +224,11 @@ scheduleRoutes.post('/dashboard', async (c) => {
 
   // Get all children
   const childrenResult = await db.prepare(`
-    SELECT * FROM children WHERE nursery_id = 'ayukko_001'
+    SELECT * FROM children WHERE nursery_id = ?
     ORDER BY 
       CASE enrollment_type WHEN '月極' THEN 0 ELSE 1 END,
       age_class ASC, birth_date ASC, name ASC
-  `).all();
+  `).bind(DEFAULT_NURSERY_ID).all();
   const children = childrenResult.results as Record<string, unknown>[];
 
   // Get all schedules for this month
@@ -399,13 +399,19 @@ scheduleRoutes.post('/dashboard', async (c) => {
 });
 
 // ── Public view: calendar data for a specific child/month ──
-// GET /api/schedules/view/:childId/:year/:month
-// Note: childId is a 16-char hex UUID which provides sufficient entropy against brute-force
-scheduleRoutes.get('/view/:childId/:year/:month', async (c) => {
+// GET /api/schedules/view/:token/:year/:month
+// token は view_token (32文字hex) または childId (16文字hex、後方互換)
+// view_token を優先検索し、見つからなければ childId にフォールバック
+scheduleRoutes.get('/view/:token/:year/:month', async (c) => {
   try {
-    const childId = c.req.param('childId');
+    const token = c.req.param('token');
     const year = parseInt(c.req.param('year') || '0', 10);
     const month = parseInt(c.req.param('month') || '0', 10);
+
+    // トークンバリデーション: 英数字・ハイフン・アンダースコアのみ
+    if (!/^[a-zA-Z0-9_-]+$/.test(token)) {
+      return c.json({ error: '無効なトークンです' }, 400);
+    }
 
     if (isNaN(year) || year < 2000 || year > 2100 || isNaN(month) || month < 1 || month > 12) {
       return c.json({ error: '無効な年月です' }, 400);
@@ -414,10 +420,17 @@ scheduleRoutes.get('/view/:childId/:year/:month', async (c) => {
     const db = c.env.DB;
     if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
 
-  // Get child info
-  const child = await db.prepare(
-    'SELECT id, name, enrollment_type, birth_date, age_class FROM children WHERE id = ?'
-  ).bind(childId).first<{ id: string; name: string; enrollment_type: string; birth_date: string | null; age_class: number | null }>();
+  // view_token で検索（推奨）→ childId にフォールバック（後方互換）
+  let child = await db.prepare(
+    'SELECT id, name, enrollment_type, birth_date, age_class FROM children WHERE view_token = ?'
+  ).bind(token).first<{ id: string; name: string; enrollment_type: string; birth_date: string | null; age_class: number | null }>();
+
+  if (!child) {
+    // 後方互換: childId として検索
+    child = await db.prepare(
+      'SELECT id, name, enrollment_type, birth_date, age_class FROM children WHERE id = ?'
+    ).bind(token).first<{ id: string; name: string; enrollment_type: string; birth_date: string | null; age_class: number | null }>();
+  }
 
   if (!child) {
     return c.json({ error: '園児が見つかりません' }, 404);
@@ -429,7 +442,7 @@ scheduleRoutes.get('/view/:childId/:year/:month', async (c) => {
     FROM schedule_plans
     WHERE child_id = ? AND year = ? AND month = ?
     ORDER BY day ASC
-  `).bind(childId, year, month).all();
+  `).bind(child.id, year, month).all();
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const weekdayNames = ['日', '月', '火', '水', '木', '金', '土'];

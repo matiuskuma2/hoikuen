@@ -10,12 +10,12 @@
  */
 
 import { Hono } from 'hono';
-import type { HonoEnv } from '../types/index';
+import { DEFAULT_NURSERY_ID, type HonoEnv } from '../types/index';
 import { getAgeClassFromBirthDate, getFiscalYear, ageClassToLabel } from '../lib/age-class';
 
 const childRoutes = new Hono<HonoEnv>();
 
-const NURSERY_ID = 'ayukko_001';
+const NURSERY_ID = DEFAULT_NURSERY_ID;
 
 // ── List all children ──
 childRoutes.get('/', async (c) => {
@@ -80,11 +80,13 @@ childRoutes.post('/', async (c) => {
     const db = c.env.DB;
     if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
     const childId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+    // view_token: 保護者カレンダーURL用のランダムトークン (32文字hex)
+    const viewToken = Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
 
     await db.prepare(`
-      INSERT INTO children (id, nursery_id, lukumi_id, name, name_kana, birth_date, age_class, enrollment_type, child_order, is_allergy)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(childId, NURSERY_ID, lukumiId, name, nameKana, birthDate, ageClass, enrollmentType, childOrder, isAllergy).run();
+      INSERT INTO children (id, nursery_id, lukumi_id, name, name_kana, birth_date, age_class, enrollment_type, child_order, is_allergy, view_token)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(childId, NURSERY_ID, lukumiId, name, nameKana, birthDate, ageClass, enrollmentType, childOrder, isAllergy, viewToken).run();
 
     const created = await db.prepare('SELECT * FROM children WHERE id = ?').bind(childId).first();
     return c.json(created, 201);
@@ -182,3 +184,24 @@ childRoutes.delete('/:id', async (c) => {
 });
 
 export default childRoutes;
+
+// ── view_token 再発行エンドポイント ──
+// POST /api/children/:id/regenerate-token
+childRoutes.post('/:id/regenerate-token', async (c) => {
+  try {
+    const childId = c.req.param('id');
+    const db = c.env.DB;
+    if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
+
+    const child = await db.prepare('SELECT id FROM children WHERE id = ?').bind(childId).first();
+    if (!child) return c.json({ error: '園児が見つかりません' }, 404);
+
+    const newToken = Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
+    await db.prepare("UPDATE children SET view_token = ?, updated_at = datetime('now') WHERE id = ?").bind(newToken, childId).run();
+
+    return c.json({ id: childId, view_token: newToken, message: 'トークンを再発行しました' });
+  } catch (e: any) {
+    console.error('Token regenerate error:', e);
+    return c.json({ error: e.message || 'トークン再発行エラー' }, 500);
+  }
+});
