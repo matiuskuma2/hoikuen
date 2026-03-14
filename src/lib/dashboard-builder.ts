@@ -6,7 +6,7 @@
  */
 import {
   parseLukumi, parseSchedule, matchChildren, computeUsageFacts,
-  normalizeName, type MatchedChild, type ParseWarning, type SchedulePlan, type UsageFact,
+  normalizeName, type MatchedChild, type ParseWarning, type SchedulePlan, type ParsedUsageFact,
 } from './excel-parser';
 
 /** ファイルサイズ制限: 50MB (Cloudflare Workers メモリ上限 128MB を考慮) */

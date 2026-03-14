@@ -11,7 +11,7 @@
 
 import { Hono } from 'hono';
 import type { HonoEnv } from '../types/index';
-import { toMinutes } from '../types/index';
+import { toMinutes, safeToMinutes, TIME_BOUNDARIES } from '../types/index';
 import { getAgeClassFromBirthDate, getFiscalYear, ageClassToLabel } from '../lib/age-class';
 
 const scheduleRoutes = new Hono<HonoEnv>();
@@ -289,17 +289,12 @@ scheduleRoutes.post('/dashboard', async (c) => {
       if (s.pm_snack_flag) pmSnackCount++;
       if (s.dinner_flag) dinnerCount++;
 
-      // Check time zones
-      // ⚠️ 懸念点: 延長保育の閾値について
-      // excel-parser.ts: ext_start=1200(20:00), night=1260(21:00)
-      // usage-calculator.ts: extension_start=1080(18:00), night=1200(20:00)
-      // schedules.ts: extension=1200(20:00), night=1260(21:00)
-      // TODO: 要確認 — ビジネスルールを統一する必要あり（18:00 or 20:00）
-      const startMin = safeTimeToMinutes(s.planned_start as string);
-      const endMin = safeTimeToMinutes(s.planned_end as string);
-      if (startMin !== null && startMin < 450) earlyMorningCount++; // before 7:30
-      if (endMin !== null && endMin > 1200) extensionCount++; // after 20:00
-      if (endMin !== null && endMin > 1260) nightCount++; // after 21:00
+      // Check time zones — TIME_BOUNDARIES 定数を使用（全モジュール統一）
+      const startMin = safeToMinutes(s.planned_start as string);
+      const endMin = safeToMinutes(s.planned_end as string);
+      if (startMin !== null && startMin < TIME_BOUNDARIES.early_end) earlyMorningCount++;
+      if (endMin !== null && endMin > TIME_BOUNDARIES.extension_start) extensionCount++;
+      if (endMin !== null && endMin > TIME_BOUNDARIES.night_start) nightCount++;
 
       const className = enrollType === '一時' ? '一時' : (ageClass !== null ? `${ageClass}歳児` : '');
 
@@ -320,10 +315,9 @@ scheduleRoutes.post('/dashboard', async (c) => {
         has_am_snack: s.am_snack_flag ? 1 : 0,
         has_pm_snack: s.pm_snack_flag ? 1 : 0,
         has_dinner: s.dinner_flag ? 1 : 0,
-        // TODO: 要確認 — 閾値を TIME_BOUNDARIES 定数に統一すべき
-        is_early_morning: startMin !== null && startMin < 450 ? 1 : 0,
-        is_extension: endMin !== null && endMin > 1200 ? 1 : 0,
-        is_night: endMin !== null && endMin > 1260 ? 1 : 0,
+        is_early_morning: startMin !== null && startMin < TIME_BOUNDARIES.early_end ? 1 : 0,
+        is_extension: endMin !== null && endMin > TIME_BOUNDARIES.extension_start ? 1 : 0,
+        is_night: endMin !== null && endMin > TIME_BOUNDARIES.night_start ? 1 : 0,
         is_sick: 0,
         status: 'planned',
       });
@@ -485,19 +479,6 @@ scheduleRoutes.get('/view/:childId/:year/:month', async (c) => {
   }
 });
 
-/**
- * Null-safe wrapper around toMinutes from types/index.ts
- * toMinutes は string を受け取り number を返すが、null チェックが必要なため
- * schedules.ts 用のラッパーを提供
- */
-function safeTimeToMinutes(timeStr: string | null): number | null {
-  if (!timeStr) return null;
-  const parts = timeStr.split(':');
-  if (parts.length < 2) return null;
-  const h = parseInt(parts[0], 10);
-  const m = parseInt(parts[1], 10);
-  if (isNaN(h) || isNaN(m)) return null;
-  return h * 60 + m;
-}
+// safeToMinutes は types/index.ts から import 済み
 
 export default scheduleRoutes;

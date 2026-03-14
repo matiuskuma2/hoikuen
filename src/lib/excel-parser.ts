@@ -2,52 +2,31 @@
  * Excel/CSV パーサー (TypeScript + SheetJS)
  * Python Generator の lukumi_parser.py + schedule_parser.py を移植
  * Cloudflare Workers 上で動作
+ *
+ * 型定義は types/index.ts の Parsed* 型を使用
  */
 import * as XLSX from 'xlsx';
+import {
+  type ParseWarning,
+  type ParsedAttendanceRecord,
+  type ParsedChildInfo,
+  type ParsedSchedulePlan,
+  type ParsedUsageFact,
+  type MatchedChild,
+  TIME_BOUNDARIES,
+  safeToMinutes,
+} from '../types/index';
 
-// ─── 共通型定義 ───
-export interface ParseWarning {
-  level: 'info' | 'warn' | 'error';
-  child_name: string | null;
-  message: string;
-  suggestion: string | null;
-  file?: string;
-}
-
-export interface AttendanceRecord {
-  lukumi_id: string;
-  name: string;
-  year: number;
-  month: number;
-  day: number;
-  actual_checkin: string | null;
-  actual_checkout: string | null;
-  memo: string | null;
-  class_name: string;
-}
-
-export interface ChildInfo {
-  lukumi_id: string;
-  name: string;
-  name_kana: string | null;
-  birth_date: string | null;
-  age_class: number | null;
-  class_name: string;
-  enrollment_type: string;
-}
-
-export interface SchedulePlan {
-  day: number;
-  planned_start: string | null;
-  planned_end: string | null;
-  lunch_flag: number;
-  am_snack_flag: number;
-  pm_snack_flag: number;
-  dinner_flag: number;
-  breakfast_flag: number;
-  child_name: string;
-  source_file: string;
-}
+// Re-export types for backward compatibility
+export type {
+  ParseWarning,
+  MatchedChild,
+  ParsedUsageFact,
+};
+// Backward-compatible aliases
+export type AttendanceRecord = ParsedAttendanceRecord;
+export type ChildInfo = ParsedChildInfo;
+export type SchedulePlan = ParsedSchedulePlan;
 
 // ─── 名前正規化 (name_matcher.py 移植) ───
 
@@ -530,17 +509,10 @@ function safeInt(val: any): number | null {
 }
 
 /** excel-parser 内部用 timeToMinutes (null 安全版)
- * types/index.ts の toMinutes は non-null string のみ受け付けるため、
- * パーサー内部では null チェック込みのこちらを使用
+ * types/index.ts の safeToMinutes を内部エイリアスとして使用
  */
 function timeToMinutes(t: string | null): number | null {
-  if (!t) return null;
-  const parts = t.split(':');
-  if (parts.length < 2) return null;
-  const h = parseInt(parts[0], 10);
-  const m = parseInt(parts[1], 10);
-  if (isNaN(h) || isNaN(m)) return null;
-  return h * 60 + m;
+  return safeToMinutes(t);
 }
 
 function parseSingleSheet(ws: XLSX.WorkSheet, filename: string, sheetLabel: string, targetYear: number, targetMonth: number): {
@@ -724,48 +696,15 @@ export function parseSchedule(data: ArrayBuffer, filename: string, targetYear: n
 }
 
 // ─── Usage Facts 計算 (usage_calculator.py 移植) ───
+// ParsedUsageFact は types/index.ts で定義済み — ここでは import したものを使用
 
-export interface UsageFact {
-  child_id: string;
-  child_name: string;
-  year: number;
-  month: number;
-  day: number;
-  billing_start: string | null;
-  billing_end: string | null;
-  billing_minutes: number | null;
-  is_early_morning: number;
-  is_extension: number;
-  is_night: number;
-  is_sick: number;
-  has_breakfast: number;
-  has_lunch: number;
-  has_am_snack: number;
-  has_pm_snack: number;
-  has_dinner: number;
-  attendance_status: string;
-  exception_notes: string | null;
-  planned_start: string | null;
-  planned_end: string | null;
-  actual_checkin: string | null;
-  actual_checkout: string | null;
-}
+// TIME_BOUNDARIES は types/index.ts から import 済み（統一閾値）
 
-// ⚠️ 懸念点: 延長保育閾値が usage-calculator.ts の PricingRules と不整合
-// excel-parser: ext_start=1200(20:00) — ダッシュボード表示用
-// usage-calculator: extension_start=1080(18:00) — 請求計算用(PricingRules準拠)
-// TODO: 要確認 — ビジネスルールを確認し統一する必要あり
-const TIME_BOUNDARIES = {
-  early_start: 420, // 07:00
-  early_end: 450,   // 07:30
-  ext_start: 1200,  // 20:00 ← usage-calculator では 18:00 (PricingRules)
-  night_start: 1260, // 21:00 ← usage-calculator では 20:00 (PricingRules)
-};
-
+/** 0 を返す toMin — 請求計算のフォールバック用（null → 0 扱い） */
 function toMin(t: string | null): number {
   if (!t) return 0;
   const p = t.split(':');
-  return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0);
+  return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
 }
 
 function fmtTime(t: string): string {
@@ -773,21 +712,7 @@ function fmtTime(t: string): string {
   return `${parseInt(p[0])}:${p[1].padStart(2, '0')}`;
 }
 
-export interface MatchedChild {
-  id: string;
-  lukumi_id: string;
-  name: string;
-  name_norm: string;
-  name_kana: string | null;
-  age_class: number | null;
-  enrollment_type: string;
-  birth_date: string | null;
-  class_name: string;
-  has_schedule: boolean;
-  schedule_file: string | null;
-  is_allergy: number;
-  child_order: number;
-}
+// MatchedChild は types/index.ts で定義済み — ここでは import したものを使用
 
 export function matchChildren(
   lukumiChildren: ChildInfo[],
@@ -856,7 +781,7 @@ export function computeUsageFacts(
   attendance: AttendanceRecord[],
   year: number,
   month: number,
-): UsageFact[] {
+): ParsedUsageFact[] {
   // Index attendance by (lukumi_id, day)
   const attByKey = new Map<string, AttendanceRecord>();
   for (const a of attendance) {
@@ -864,7 +789,7 @@ export function computeUsageFacts(
   }
   
   const daysInMonth = new Date(year, month, 0).getDate();
-  const facts: UsageFact[] = [];
+  const facts: ParsedUsageFact[] = [];
   
   for (const child of children) {
     const childNorm = normalizeName(child.name);
@@ -891,8 +816,8 @@ function computeSingleFact(
   plan: SchedulePlan | null,
   actual: AttendanceRecord | null,
   year: number, month: number, day: number,
-): UsageFact {
-  const fact: UsageFact = {
+): ParsedUsageFact {
+  const fact: ParsedUsageFact = {
     child_id: child.lukumi_id,
     child_name: child.name,
     year, month, day,
@@ -975,7 +900,7 @@ function computeSingleFact(
   const endMin = fact.billing_end ? toMin(fact.billing_end) : null;
   
   fact.is_early_morning = (startMin < TIME_BOUNDARIES.early_end && startMin >= TIME_BOUNDARIES.early_start) ? 1 : 0;
-  fact.is_extension = (endMin != null && endMin > TIME_BOUNDARIES.ext_start) ? 1 : 0;
+  fact.is_extension = (endMin != null && endMin > TIME_BOUNDARIES.extension_start) ? 1 : 0;
   fact.is_night = (endMin != null && endMin > TIME_BOUNDARIES.night_start) ? 1 : 0;
   
   // Meal flags
