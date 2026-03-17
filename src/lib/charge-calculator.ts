@@ -122,8 +122,9 @@ export function generateChargeLines(
     });
   }
 
-  // 7. Meals
+  // 7. Meals (breakfast included — breakfast price defaults to 150 if not in rules)
   const mealTypes = [
+    { type: 'breakfast', flag: 'has_breakfast' as const, price: rules.meal_prices.breakfast ?? 150 },
     { type: 'lunch', flag: 'has_lunch' as const, price: rules.meal_prices.lunch },
     { type: 'am_snack', flag: 'has_am_snack' as const, price: rules.meal_prices.am_snack },
     { type: 'pm_snack', flag: 'has_pm_snack' as const, price: rules.meal_prices.pm_snack },

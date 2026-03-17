@@ -15,6 +15,7 @@ import templateRoutes from './routes/templates';
 import scheduleRoutes from './routes/schedules';
 import lineRoutes from './routes/line';
 import uploadRoutes from './routes/upload';
+import generateRoutes from './routes/generate';
 
 const app = new Hono<HonoEnv>();
 
@@ -89,6 +90,7 @@ app.route('/api/templates', templateRoutes);
 app.route('/api/schedules', scheduleRoutes);
 app.route('/api/line', lineRoutes);
 app.route('/api/upload', uploadRoutes);
+app.route('/api/generate', generateRoutes);
 
 // Main UI HTML
 function mainPage(): string {
@@ -1098,32 +1100,119 @@ function mainPage(): string {
         </div>
       </div>
 
-      <!-- Empty state -->
-      <div id="generate-empty" class="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-        <div class="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mx-auto mb-4">
-          <i class="fas fa-file-archive text-green-400 text-2xl"></i>
+      <!-- Empty state / Quick Generate -->
+      <div id="generate-empty" class="bg-white rounded-xl shadow-sm border border-gray-200">
+        <div class="px-5 py-4 border-b border-gray-100">
+          <h3 class="text-base font-semibold text-gray-800 flex items-center gap-2">
+            <span class="w-7 h-7 bg-green-600 text-white rounded-full flex items-center justify-center text-sm"><i class="fas fa-bolt"></i></span>
+            Excel帳票生成（DB直結）
+          </h3>
+          <p class="text-xs text-gray-500 mt-1">
+            <i class="fas fa-info-circle text-blue-400 mr-1"></i>
+            DBに保存済みの予定・出席データから、請求明細Excel・日報Excelを一括生成します。
+          </p>
         </div>
-        <h3 class="text-lg font-semibold text-gray-700 mb-2">提出物生成</h3>
-        <p class="text-sm text-gray-500 mb-2 max-w-lg mx-auto">
-          データをアップロードすると、以下の提出物を一括生成できます：
-        </p>
-        <div class="flex justify-center gap-4 mt-4 mb-6 text-xs text-gray-600">
-          <div class="bg-green-50 px-3 py-2 rounded-lg border border-green-200">
-            <div class="font-bold text-green-700">📁 01_園内管理</div>
-            <div>登園確認表・実績表・保育時間</div>
+        <div class="p-5">
+          <div class="flex flex-wrap items-end gap-3 mb-5">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">年</label>
+              <input type="number" id="gen-year" min="2024" max="2030" class="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-green-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">月</label>
+              <select id="gen-month" class="w-20 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-green-500">
+                <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
+                <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
+                <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
+                <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
+              </select>
+            </div>
+            <button onclick="generateAll()" id="btn-generate-all" class="bg-green-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors">
+              <i class="fas fa-cogs mr-1"></i>計算＆帳票生成
+            </button>
+            <button onclick="downloadBilling()" class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors">
+              <i class="fas fa-file-invoice-dollar mr-1"></i>請求明細のみ
+            </button>
+            <button onclick="downloadDaily()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
+              <i class="fas fa-clipboard-list mr-1"></i>日報のみ
+            </button>
           </div>
-          <div class="bg-purple-50 px-3 py-2 rounded-lg border border-purple-200">
-            <div class="font-bold text-purple-700">📁 02_経理提出</div>
-            <div>保育料明細（数量列自動入力）</div>
+          <div id="gen-result" class="hidden">
+            <div id="gen-result-content" class="bg-green-50 rounded-lg p-4 border border-green-200 text-sm"></div>
           </div>
-          <div class="bg-blue-50 px-3 py-2 rounded-lg border border-blue-200">
-            <div class="font-bold text-blue-700">📁 03_保護者配布</div>
-            <div>園児別 利用明細書PDF</div>
-          </div>
+          <div id="gen-error" class="hidden bg-red-50 rounded-lg p-4 border border-red-200 text-sm text-red-700"></div>
         </div>
-        <button onclick="switchTab('upload')" class="bg-green-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-green-700">
-          <i class="fas fa-upload mr-1"></i>データをアップロード
-        </button>
+      </div>
+
+      <!-- CSV Import Section -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mt-4">
+        <div class="px-5 py-4 border-b border-gray-100">
+          <h3 class="text-base font-semibold text-gray-800 flex items-center gap-2">
+            <span class="w-7 h-7 bg-orange-500 text-white rounded-full flex items-center justify-center text-sm"><i class="fas fa-file-csv"></i></span>
+            園児CSVインポート
+          </h3>
+          <p class="text-xs text-gray-500 mt-1">
+            <i class="fas fa-info-circle text-blue-400 mr-1"></i>
+            ルクミーCSVをインポートして園児マスタを一括更新します。クラス名から「一時預かり」/「月極」を自動判定し、生年月日から年齢クラスを算出します。
+          </p>
+        </div>
+        <div class="p-5">
+          <div class="flex items-end gap-3">
+            <div class="flex-1">
+              <label class="block text-xs font-medium text-gray-600 mb-1">CSVファイル</label>
+              <input type="file" id="csv-import-file" accept=".csv" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <button onclick="importChildrenCsv()" class="bg-orange-500 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 transition-colors">
+              <i class="fas fa-upload mr-1"></i>インポート
+            </button>
+          </div>
+          <div id="csv-import-result" class="hidden mt-3"></div>
+        </div>
+      </div>
+
+      <!-- File Import Section (ルクミー＋予定表→DB保存) -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mt-4">
+        <div class="px-5 py-4 border-b border-gray-100">
+          <h3 class="text-base font-semibold text-gray-800 flex items-center gap-2">
+            <span class="w-7 h-7 bg-indigo-600 text-white rounded-full flex items-center justify-center text-sm"><i class="fas fa-database"></i></span>
+            ファイル→DB取込
+          </h3>
+          <p class="text-xs text-gray-500 mt-1">
+            <i class="fas fa-info-circle text-blue-400 mr-1"></i>
+            ルクミー登降園データ・利用予定表Excelをアップロードして、DBに出席・予定データを保存します。
+          </p>
+        </div>
+        <div class="p-5">
+          <div class="flex flex-wrap items-end gap-3 mb-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">年</label>
+              <input type="number" id="import-year" min="2024" max="2030" class="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">月</label>
+              <select id="import-month" class="w-20 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500">
+                <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
+                <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
+                <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
+                <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
+              </select>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">ルクミー登降園データ（任意）</label>
+              <input type="file" id="import-lukumi" accept=".csv,.xlsx,.xls" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">利用予定表Excel（任意・複数可）</label>
+              <input type="file" id="import-schedules" accept=".xlsx,.xls" multiple class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+          </div>
+          <button onclick="importFilesToDb()" class="bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">
+            <i class="fas fa-database mr-1"></i>DBに取込
+          </button>
+          <div id="import-result" class="hidden mt-3"></div>
+        </div>
       </div>
     </div>
 

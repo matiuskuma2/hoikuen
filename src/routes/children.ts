@@ -185,6 +185,213 @@ childRoutes.delete('/:id', async (c) => {
 
 export default childRoutes;
 
+// ═══════════════════════════════════
+// POST /api/children/import — 園児CSVインポート（クラス判定付き）
+// ═══════════════════════════════════
+// CSV列: クラス名, 氏名(姓), 氏名(名), 生年月日, ルクミーID, ...
+// クラス名が「一時預かり」「一時」→ enrollment_type = '一時'
+// それ以外 → enrollment_type = '月極'、birth_date → age_class 自動計算
+childRoutes.post('/import', async (c) => {
+  try {
+    const formData = await c.req.formData();
+    const file = formData.get('file') as File | null;
+
+    if (!file || file.size === 0) {
+      return c.json({ error: 'CSVファイルを指定してください' }, 400);
+    }
+
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+
+    if (lines.length < 2) {
+      return c.json({ error: 'CSVにデータ行がありません' }, 400);
+    }
+
+    const db = c.env.DB;
+    if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
+
+    const now = new Date();
+    const fiscalYear = getFiscalYear(now.getFullYear(), now.getMonth() + 1);
+
+    // Parse header
+    const header = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+    const colIdx: Record<string, number> = {};
+
+    // Auto-detect columns
+    const colPatterns: Record<string, string[]> = {
+      class_name: ['クラス名', 'クラス', 'class', '組'],
+      surname: ['姓', '園児姓', '苗字', '名前(姓)'],
+      firstname: ['名', '園児名', '名前(名)'],
+      fullname: ['氏名', '園児名', 'name', 'フルネーム'],
+      birth_date: ['生年月日', '誕生日', 'birthday', '生月日'],
+      lukumi_id: ['園児ID', 'ルクミーID', 'ID', '児童ID'],
+      kana_sei: ['姓よみ', 'セイ', '姓読み'],
+      kana_mei: ['名よみ', 'メイ', '名読み'],
+      enrollment_type: ['利用区分', '区分', '在籍区分', 'enrollment'],
+    };
+
+    // Pass 1: exact match only
+    for (let i = 0; i < header.length; i++) {
+      const h = header[i];
+      for (const [field, patterns] of Object.entries(colPatterns)) {
+        if (field in colIdx) continue;
+        for (const p of patterns) {
+          if (h === p) {
+            colIdx[field] = i;
+            break;
+          }
+        }
+      }
+    }
+    // Pass 2: includes match (only for patterns of length >= 2, skip already matched)
+    for (let i = 0; i < header.length; i++) {
+      const h = header[i];
+      // Skip columns already assigned
+      if (Object.values(colIdx).includes(i)) continue;
+      for (const [field, patterns] of Object.entries(colPatterns)) {
+        if (field in colIdx) continue;
+        for (const p of patterns) {
+          if (p.length >= 3 && h.includes(p)) {
+            colIdx[field] = i;
+            break;
+          }
+        }
+      }
+    }
+
+    const warnings: string[] = [];
+    const results: { name: string; age_class: number | null; enrollment_type: string; action: string }[] = [];
+    let created = 0;
+    let updated = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+      if (cols.length < 2) continue;
+
+      // Name
+      let name: string;
+      if ('fullname' in colIdx) {
+        name = cols[colIdx.fullname] || '';
+      } else if ('surname' in colIdx) {
+        const sur = cols[colIdx.surname] || '';
+        const first = 'firstname' in colIdx ? (cols[colIdx.firstname] || '') : '';
+        name = `${sur} ${first}`.trim();
+      } else {
+        // Fallback: assume col 1 is surname, col 2 is firstname
+        name = `${cols[1] || ''} ${cols[2] || ''}`.trim();
+      }
+
+      if (!name) {
+        warnings.push(`行${i + 1}: 名前が空のためスキップ`);
+        continue;
+      }
+
+      // Class name → enrollment_type determination
+      const className = 'class_name' in colIdx ? (cols[colIdx.class_name] || '') : '';
+      const rawEnrollmentType = 'enrollment_type' in colIdx ? (cols[colIdx.enrollment_type] || '') : '';
+
+      let enrollmentType = '月極';
+      if (
+        className.includes('一時') || className.includes('いちじ') || className.includes('一時預かり') ||
+        rawEnrollmentType.includes('一時')
+      ) {
+        enrollmentType = '一時';
+      }
+
+      // Birth date
+      let birthDate: string | null = null;
+      if ('birth_date' in colIdx) {
+        const raw = cols[colIdx.birth_date] || '';
+        // Parse various date formats
+        const match = raw.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+        if (match) {
+          birthDate = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+        }
+      }
+
+      // Age class determination
+      let ageClass: number | null = null;
+      if (enrollmentType === '月極' && birthDate) {
+        ageClass = getAgeClassFromBirthDate(birthDate, fiscalYear);
+      }
+      // Fallback: parse from class_name (e.g. "0歳児", "1歳児")
+      if (ageClass === null && enrollmentType === '月極') {
+        const ageMatch = className.match(/(\d)歳/);
+        if (ageMatch) ageClass = parseInt(ageMatch[1]);
+      }
+
+      // Lukumi ID
+      const lukumiId = 'lukumi_id' in colIdx ? (cols[colIdx.lukumi_id] || null) : null;
+
+      // Kana
+      const kanaSei = 'kana_sei' in colIdx ? (cols[colIdx.kana_sei] || '') : '';
+      const kanaMei = 'kana_mei' in colIdx ? (cols[colIdx.kana_mei] || '') : '';
+      const nameKana = `${kanaSei} ${kanaMei}`.trim() || null;
+
+      // Check if child already exists (by name or lukumi_id)
+      let existing: Record<string, unknown> | null = null;
+      if (lukumiId) {
+        existing = await db.prepare(
+          `SELECT * FROM children WHERE nursery_id = ? AND lukumi_id = ?`
+        ).bind(NURSERY_ID, lukumiId).first() as Record<string, unknown> | null;
+      }
+      if (!existing) {
+        existing = await db.prepare(
+          `SELECT * FROM children WHERE nursery_id = ? AND name = ?`
+        ).bind(NURSERY_ID, name).first() as Record<string, unknown> | null;
+      }
+
+      if (existing) {
+        // Update existing
+        await db.prepare(`
+          UPDATE children SET
+            name_kana = COALESCE(?, name_kana),
+            birth_date = COALESCE(?, birth_date),
+            age_class = COALESCE(?, age_class),
+            enrollment_type = ?,
+            lukumi_id = COALESCE(?, lukumi_id),
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(
+          nameKana, birthDate, ageClass, enrollmentType, lukumiId,
+          existing.id as string,
+        ).run();
+        updated++;
+        results.push({ name, age_class: ageClass, enrollment_type: enrollmentType, action: 'updated' });
+      } else {
+        // Create new
+        const childId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+        const viewToken = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+
+        await db.prepare(`
+          INSERT INTO children (id, nursery_id, lukumi_id, name, name_kana, birth_date, age_class, enrollment_type, view_token)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          childId, NURSERY_ID, lukumiId, name, nameKana, birthDate, ageClass, enrollmentType, viewToken,
+        ).run();
+        created++;
+        results.push({ name, age_class: ageClass, enrollment_type: enrollmentType, action: 'created' });
+      }
+    }
+
+    return c.json({
+      success: true,
+      created,
+      updated,
+      total: created + updated,
+      results,
+      warnings,
+      message: `CSVインポート完了: 新規${created}件, 更新${updated}件`,
+    });
+
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('Children import error:', message);
+    return c.json({ error: `CSVインポートエラー: ${message}` }, 500);
+  }
+});
+
 // ── view_token 再発行エンドポイント ──
 // POST /api/children/:id/regenerate-token
 childRoutes.post('/:id/regenerate-token', async (c) => {

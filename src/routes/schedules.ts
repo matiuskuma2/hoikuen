@@ -256,6 +256,7 @@ scheduleRoutes.post('/dashboard', async (c) => {
     const daySchedules = schedules.filter((s) => s.day === day);
 
     let totalChildren = 0;
+    let breakfastCount = 0;
     let lunchCount = 0;
     let amSnackCount = 0;
     let pmSnackCount = 0;
@@ -284,6 +285,7 @@ scheduleRoutes.post('/dashboard', async (c) => {
       else if (ageClass === 4) age4++;
       else if (ageClass === 5) age5++;
 
+      if (s.breakfast_flag) breakfastCount++;
       if (s.lunch_flag) lunchCount++;
       if (s.am_snack_flag) amSnackCount++;
       if (s.pm_snack_flag) pmSnackCount++;
@@ -311,6 +313,7 @@ scheduleRoutes.post('/dashboard', async (c) => {
         actual_checkout: null,
         billing_start: s.planned_start,
         billing_end: s.planned_end,
+        has_breakfast: s.breakfast_flag ? 1 : 0,
         has_lunch: s.lunch_flag ? 1 : 0,
         has_am_snack: s.am_snack_flag ? 1 : 0,
         has_pm_snack: s.pm_snack_flag ? 1 : 0,
@@ -328,6 +331,7 @@ scheduleRoutes.post('/dashboard', async (c) => {
       weekday,
       is_weekend: isWeekend,
       total_children: totalChildren,
+      breakfast_count: breakfastCount,
       lunch_count: lunchCount,
       am_snack_count: amSnackCount,
       pm_snack_count: pmSnackCount,

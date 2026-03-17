@@ -2817,6 +2817,370 @@ function showCopyFeedback(element) {
 }
 
 // ═══════════════════════════════════════════
+// GENERATE TAB — Excel帳票生成 (DB直結 Phase A)
+// ═══════════════════════════════════════════
+
+/**
+ * 一括生成: compute → billing + daily Excel → R2保存
+ * POST /api/generate/all
+ */
+async function generateAll() {
+  const yearEl = document.getElementById('gen-year');
+  const monthEl = document.getElementById('gen-month');
+  const year = parseInt(yearEl?.value);
+  const month = parseInt(monthEl?.value);
+
+  if (!year || !month) {
+    alert('年と月を指定してください');
+    return;
+  }
+
+  const btn = document.getElementById('btn-generate-all');
+  const resultDiv = document.getElementById('gen-result');
+  const resultContent = document.getElementById('gen-result-content');
+  const errorDiv = document.getElementById('gen-error');
+
+  // Reset UI
+  resultDiv.classList.add('hidden');
+  errorDiv.classList.add('hidden');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>処理中...';
+
+  try {
+    const response = await fetch('/api/generate/all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year, month }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      errorDiv.textContent = data.error || '生成に失敗しました';
+      errorDiv.classList.remove('hidden');
+      return;
+    }
+
+    // Build result HTML
+    const filesHtml = (data.files || []).map(f => {
+      const icon = f.type === 'billing_excel'
+        ? 'fa-file-invoice-dollar text-purple-500'
+        : 'fa-clipboard-list text-blue-500';
+      return `
+        <div class="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-gray-200">
+          <div class="flex items-center gap-2">
+            <i class="fas ${icon}"></i>
+            <span class="text-sm font-medium">${escapeHtml(f.name)}</span>
+          </div>
+          <a href="${f.download_url}" class="text-green-600 hover:text-green-800 text-sm font-medium">
+            <i class="fas fa-download mr-1"></i>DL
+          </a>
+        </div>
+      `;
+    }).join('');
+
+    const warningsHtml = (data.warnings || []).length > 0
+      ? `<div class="mt-2 text-xs text-orange-600"><i class="fas fa-exclamation-triangle mr-1"></i>${data.warnings.length}件の警告</div>`
+      : '';
+
+    resultContent.innerHTML = `
+      <div class="flex items-center gap-2 mb-3">
+        <span class="w-6 h-6 bg-green-500 text-white rounded-full flex items-center justify-center text-xs font-bold">✓</span>
+        <span class="font-bold text-green-800">生成完了</span>
+        <span class="text-gray-500 text-xs">${year}年${month}月 / ${data.children_processed || 0}名処理</span>
+      </div>
+      <div class="space-y-2">${filesHtml}</div>
+      ${warningsHtml}
+    `;
+    resultDiv.classList.remove('hidden');
+
+  } catch (err) {
+    errorDiv.textContent = `接続エラー: ${err.message}`;
+    errorDiv.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-cogs mr-1"></i>計算＆帳票生成';
+  }
+}
+
+/**
+ * 請求明細Excelのみダウンロード
+ * POST /api/generate/billing
+ */
+async function downloadBilling() {
+  const year = parseInt(document.getElementById('gen-year')?.value);
+  const month = parseInt(document.getElementById('gen-month')?.value);
+
+  if (!year || !month) {
+    alert('年と月を指定してください');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/generate/billing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year, month }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      alert(data.error || '請求明細の生成に失敗しました');
+      return;
+    }
+
+    const blob = await response.blob();
+    const fileName = `請求明細_${year}年${month}月.xlsx`;
+    _triggerDownload(blob, fileName);
+
+  } catch (err) {
+    alert(`接続エラー: ${err.message}`);
+  }
+}
+
+/**
+ * 日報Excelのみダウンロード
+ * POST /api/generate/daily
+ */
+async function downloadDaily() {
+  const year = parseInt(document.getElementById('gen-year')?.value);
+  const month = parseInt(document.getElementById('gen-month')?.value);
+
+  if (!year || !month) {
+    alert('年と月を指定してください');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/generate/daily', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year, month }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      alert(data.error || '日報の生成に失敗しました');
+      return;
+    }
+
+    const blob = await response.blob();
+    const fileName = `日報_${year}年${month}月.xlsx`;
+    _triggerDownload(blob, fileName);
+
+  } catch (err) {
+    alert(`接続エラー: ${err.message}`);
+  }
+}
+
+/** Blob → ブラウザダウンロード */
+function _triggerDownload(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════════
+// 園児CSVインポート
+// ═══════════════════════════════════════════
+
+/**
+ * 園児CSVファイルをインポート
+ * POST /api/children/import
+ */
+async function importChildrenCsv() {
+  const fileInput = document.getElementById('csv-import-file');
+  const resultDiv = document.getElementById('csv-import-result');
+
+  if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+    alert('CSVファイルを選択してください');
+    return;
+  }
+
+  const file = fileInput.files[0];
+  if (!file.name.endsWith('.csv')) {
+    alert('CSV形式のファイルを選択してください');
+    return;
+  }
+
+  resultDiv.classList.add('hidden');
+
+  try {
+    const formData = new FormData();
+    formData.append('csv_file', file);
+
+    const response = await fetch('/api/children/import', {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      resultDiv.innerHTML = `
+        <div class="bg-red-50 rounded-lg p-3 border border-red-200 text-sm text-red-700">
+          <i class="fas fa-times-circle mr-1"></i>${escapeHtml(data.error || 'インポートに失敗しました')}
+        </div>
+      `;
+      resultDiv.classList.remove('hidden');
+      return;
+    }
+
+    // Build results display
+    const statsHtml = `
+      <div class="bg-green-50 rounded-lg p-3 border border-green-200 text-sm">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="w-5 h-5 bg-green-500 text-white rounded-full flex items-center justify-center text-xs">✓</span>
+          <span class="font-bold text-green-800">${escapeHtml(data.message || 'インポート完了')}</span>
+        </div>
+        <div class="text-green-700 text-xs">
+          <span class="mr-3">新規: ${data.created || 0}件</span>
+          <span class="mr-3">更新: ${data.updated || 0}件</span>
+          <span>合計: ${data.total || 0}件</span>
+        </div>
+        ${(data.warnings || []).length > 0 ? `
+          <div class="mt-2 text-orange-600 text-xs">
+            <i class="fas fa-exclamation-triangle mr-1"></i>警告: ${data.warnings.length}件
+            <ul class="list-disc ml-5 mt-1">
+              ${data.warnings.map(w => `<li>${escapeHtml(typeof w === 'string' ? w : w.message || '')}</li>`).join('')}
+            </ul>
+          </div>
+        ` : ''}
+      </div>
+    `;
+
+    resultDiv.innerHTML = statsHtml;
+    resultDiv.classList.remove('hidden');
+
+    // Reset file input
+    fileInput.value = '';
+
+    // Reload children tab if visible
+    if (typeof loadChildren === 'function') {
+      loadChildren();
+    }
+
+  } catch (err) {
+    resultDiv.innerHTML = `
+      <div class="bg-red-50 rounded-lg p-3 border border-red-200 text-sm text-red-700">
+        <i class="fas fa-times-circle mr-1"></i>接続エラー: ${escapeHtml(err.message)}
+      </div>
+    `;
+    resultDiv.classList.remove('hidden');
+  }
+}
+
+// ═══════════════════════════════════════════
+// ファイル→DB取込 (ルクミー＋予定表→DB保存)
+// ═══════════════════════════════════════════
+
+/**
+ * ルクミー＋予定表ファイルをパースしてDBに保存
+ * POST /api/upload/import
+ */
+async function importFilesToDb() {
+  const yearEl = document.getElementById('import-year');
+  const monthEl = document.getElementById('import-month');
+  const year = parseInt(yearEl?.value);
+  const month = parseInt(monthEl?.value);
+  const resultDiv = document.getElementById('import-result');
+
+  if (!year || !month) {
+    alert('年と月を指定してください');
+    return;
+  }
+
+  const lukumiInput = document.getElementById('import-lukumi');
+  const schedInput = document.getElementById('import-schedules');
+
+  const lukumiFile = lukumiInput?.files?.[0] || null;
+  const scheduleFiles = schedInput?.files || [];
+
+  if (!lukumiFile && scheduleFiles.length === 0) {
+    alert('ルクミーデータまたは予定表のいずれかを選択してください');
+    return;
+  }
+
+  resultDiv.classList.add('hidden');
+
+  const formData = new FormData();
+  formData.append('year', String(year));
+  formData.append('month', String(month));
+
+  if (lukumiFile) {
+    formData.append('lukumi_file', lukumiFile);
+  }
+  for (let i = 0; i < scheduleFiles.length; i++) {
+    formData.append('schedule_files', scheduleFiles[i]);
+  }
+
+  try {
+    const response = await fetch('/api/upload/import', {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      resultDiv.innerHTML = `
+        <div class="bg-red-50 rounded-lg p-3 border border-red-200 text-sm text-red-700">
+          <i class="fas fa-times-circle mr-1"></i>${escapeHtml(data.error || 'インポートに失敗しました')}
+        </div>
+      `;
+      resultDiv.classList.remove('hidden');
+      return;
+    }
+
+    const stats = data.stats || {};
+    const warnings = data.warnings || [];
+
+    resultDiv.innerHTML = `
+      <div class="bg-green-50 rounded-lg p-3 border border-green-200 text-sm">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="w-5 h-5 bg-green-500 text-white rounded-full flex items-center justify-center text-xs">✓</span>
+          <span class="font-bold text-green-800">${escapeHtml(data.message || 'インポート完了')}</span>
+        </div>
+        <div class="text-green-700 text-xs grid grid-cols-3 gap-2">
+          <div><i class="fas fa-child mr-1"></i>園児: ${stats.children_upserted || 0}件</div>
+          <div><i class="fas fa-clock mr-1"></i>出席: ${stats.attendance_upserted || 0}件</div>
+          <div><i class="fas fa-calendar mr-1"></i>予定: ${stats.schedule_upserted || 0}件</div>
+        </div>
+        ${warnings.length > 0 ? `
+          <div class="mt-2 text-orange-600 text-xs">
+            <i class="fas fa-exclamation-triangle mr-1"></i>警告: ${warnings.length}件
+            <details class="mt-1">
+              <summary class="cursor-pointer">詳細を表示</summary>
+              <ul class="list-disc ml-5 mt-1">
+                ${warnings.map(w => `<li>${escapeHtml(typeof w === 'string' ? w : w.message || '')}</li>`).join('')}
+              </ul>
+            </details>
+          </div>
+        ` : ''}
+      </div>
+    `;
+    resultDiv.classList.remove('hidden');
+
+    // Reset file inputs
+    if (lukumiInput) lukumiInput.value = '';
+    if (schedInput) schedInput.value = '';
+
+  } catch (err) {
+    resultDiv.innerHTML = `
+      <div class="bg-red-50 rounded-lg p-3 border border-red-200 text-sm text-red-700">
+        <i class="fas fa-times-circle mr-1"></i>接続エラー: ${escapeHtml(err.message)}
+      </div>
+    `;
+    resultDiv.classList.remove('hidden');
+  }
+}
+
+// ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
 
@@ -2861,6 +3225,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const dashMonth = document.getElementById('dash-month');
   if (dashYear) dashYear.value = String(now.getFullYear());
   if (dashMonth) dashMonth.value = String(now.getMonth() + 1);
+
+  // Set current month for generate tab selectors
+  const genYear = document.getElementById('gen-year');
+  const genMonth = document.getElementById('gen-month');
+  if (genYear) genYear.value = String(now.getFullYear());
+  if (genMonth) genMonth.value = String(now.getMonth() + 1);
+
+  // Set current month for import tab selectors
+  const importYear = document.getElementById('import-year');
+  const importMonth = document.getElementById('import-month');
+  if (importYear) importYear.value = String(now.getFullYear());
+  if (importMonth) importMonth.value = String(now.getMonth() + 1);
 
   // Start on dashboard tab
   switchTab(TABS.DASHBOARD);

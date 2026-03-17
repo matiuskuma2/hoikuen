@@ -114,6 +114,7 @@ export interface SchedulePlan {
   am_snack_flag: number;
   pm_snack_flag: number;
   dinner_flag: number;
+  breakfast_flag: number;
   source_file: string | null;
 }
 
@@ -146,6 +147,7 @@ export interface UsageFact {
   is_night: number;
   is_sick: number;
   spot_30min_blocks: number;
+  has_breakfast: number;
   has_lunch: number;
   has_am_snack: number;
   has_pm_snack: number;
@@ -194,6 +196,7 @@ export interface PricingRules {
   night_fees: Record<string, number>;
   sick_fee: number;
   meal_prices: {
+    breakfast: number;
     lunch: number;
     am_snack: number;
     pm_snack: number;

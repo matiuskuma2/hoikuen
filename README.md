@@ -1,6 +1,6 @@
 # あゆっこ保育所 業務自動化システム
 
-> **Version**: 9.5 — URL保護・ユニットテスト85件・nursery_id一元化 (2026-03-14)
+> **Version**: 10.0 — Excel帳票生成エンジン（TypeScript全移行）・朝食対応・園児CSV一括インポート (2026-03-17)
 > **GitHub**: https://github.com/matiuskuma2/hoikuen
 
 ---
@@ -35,7 +35,7 @@ LINE経由で保護者から利用予定を収集するシステム。
 |---------|------|
 | Frontend | HTML + TailwindCSS + Vanilla JS |
 | Backend (API) | Hono (Cloudflare Pages) |
-| Backend (Generator) | Python + FastAPI (uvicorn, port 8787) |
+| Excel生成 | SheetJS (xlsx) — TypeScript |
 | Database | Cloudflare D1 (SQLite) |
 | Storage | Cloudflare R2 |
 | LINE連携 | Web Crypto API + fetch (SDK不使用) |
@@ -156,13 +156,25 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 | POST | `/api/line/link-codes` | 連携コード新規発行 |
 | GET | `/api/line/submission-status` | 月次提出状況（?year=&month=） |
 
-### ジョブ・テンプレート
+### ジョブ・テンプレート・帳票生成
 | Method | Path | 説明 |
 |--------|------|------|
 | POST | `/api/jobs` | ジョブ作成 |
 | GET | `/api/jobs/:id` | ジョブ状態取得 |
 | POST | `/api/templates` | テンプレート登録 |
 | GET | `/api/templates` | テンプレート一覧 |
+| POST | `/api/generate/compute` | usage_facts + charge_lines 計算→DB保存 |
+| POST | `/api/generate/billing` | 請求明細Excel生成（ダウンロード） |
+| POST | `/api/generate/daily` | 日報Excel生成（ダウンロード） |
+| POST | `/api/generate/all` | 全帳票一括生成（計算→Excel→R2保存） |
+| GET | `/api/generate/download/*` | R2保存ファイルダウンロード |
+
+### アップロード・インポート
+| Method | Path | 説明 |
+|--------|------|------|
+| POST | `/api/upload/dashboard` | 従来互換（ファイルからダッシュボード生成） |
+| POST | `/api/upload/import` | ルクミー＋予定表 → DB取込 |
+| POST | `/api/children/import` | 園児CSVインポート（クラス・年齢自動判定） |
 
 ---
 
@@ -191,8 +203,16 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 ## 現在のステータス
 
 ### ✅ 完了
+- **v10.0 — Excel帳票生成エンジン (Full TypeScript)** (2026-03-17)
+  - 🟢 **Phase A-0**: 朝食(breakfast)対応 — charge_lines CHECK制約更新、PricingRules/meal_prices拡張
+  - 🟢 **Phase A-1**: 請求明細Excel生成 (billing-generator.ts) — 請求一覧・請求明細・単価表の3シート
+  - 🟢 **Phase A-2**: 日報Excel生成 (daily-report-generator.ts) — 月間サマリー・出席一覧・食事集計・時間外保育の4シート
+  - 🟢 **Phase A-3**: 全帳票一括生成パイプライン (`/api/generate/all`) — compute→Excel→R2保存→output_files記録
+  - 🟢 **Phase B**: ファイルアップロード→DB取込 (`/api/upload/import`) — ルクミー＋予定表をパースしてDB保存、SSOT化
+  - 🟢 **Phase C**: 園児CSV一括インポート (`/api/children/import`) — クラス名から一時預かり/月極を自動判定、生年月日から年齢クラス算出
+  - 🟢 **UIフロントエンド統合**: 提出物生成タブに計算＆帳票生成・個別DL・ファイルDB取込・CSVインポートを実装
+  - 🟢 Python Generator依存を完全排除 — TypeScript + SheetJS で全Excel生成
 - メインUI（ダッシュボード・園児管理・予定入力・ファイル入力・提出物生成）
-- Python Generator（帳票生成エンジン）
 - **LINE Phase 1 MVP** — 実機テスト完了 (2026-03-07)
   - 友だち追加 → 連携コード検証 → 園児紐づけ
   - 月選択 → 予定入力（固定フォーマット・範囲指定対応）
@@ -264,6 +284,7 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 
 | 日付 | 内容 |
 |------|------|
+| 2026-03-17 | **v10.0**: Excel帳票生成エンジン Full TypeScript移行（Python依存排除）、朝食サポート追加、billing/daily Excel生成（SheetJS）、一括生成パイプライン、ファイルDB取込、園児CSVインポート、フロントエンドUI統合 |
 | 2026-03-14 | **v9.5**: URL保護（view_token 32文字）、ユニットテスト85件追加（Vitest）、nursery_id一元化（DEFAULT_NURSERY_ID）、新Cloudflareアカウントにデプロイ完了（本番+ステージング）、migration 0004適用済み |
 | 2026-03-14 | **v9.4**: 型定義統合（Parsed* prefixで excel-parser 独自型を types/index.ts に集約）、延長保育閾値統一（18:00）、schedules.ts のハードコード閾値を TIME_BOUNDARIES に置換 |
 | 2026-03-14 | **v9.3**: コードレビュー Phase 1・2 — ダッシュボード集約・try/catch・サニタイズ・normalizeName統一・ファイルサイズ上限追加 |

@@ -40,6 +40,7 @@ export function computeUsageFact(
     is_night: 0,
     is_sick: 0,
     spot_30min_blocks: 0,
+    has_breakfast: 0,
     has_lunch: 0,
     has_am_snack: 0,
     has_pm_snack: 0,
@@ -172,12 +173,14 @@ export function computeUsageFact(
   // --- Step 6: Meal flags ---
   if (fact.attendance_status === 'present' || fact.attendance_status === 'late_arrive') {
     if (hasPlan) {
+      fact.has_breakfast = plan!.breakfast_flag ?? 0;
       fact.has_lunch = plan!.lunch_flag;
       fact.has_am_snack = plan!.am_snack_flag;
       fact.has_pm_snack = plan!.pm_snack_flag;
       fact.has_dinner = plan!.dinner_flag;
     } else {
       // Infer from presence hours
+      fact.has_breakfast = (startMin <= earlyEnd) ? 1 : 0; // before 7:30 → breakfast
       fact.has_lunch = (startMin <= 720 && (endMin ?? 0) >= 720) ? 1 : 0;
       fact.has_am_snack = (startMin <= 600) ? 1 : 0;
       fact.has_pm_snack = ((endMin ?? 0) >= 900) ? 1 : 0;

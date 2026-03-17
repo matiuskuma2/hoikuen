@@ -32,6 +32,7 @@ VALUES (
     },
     "sick_fee": 2500,
     "meal_prices": {
+      "breakfast": 150,
       "lunch": 300,
       "am_snack": 50,
       "pm_snack": 100,
