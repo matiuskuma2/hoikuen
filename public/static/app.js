@@ -3012,7 +3012,7 @@ async function importChildrenCsv() {
 
   try {
     const formData = new FormData();
-    formData.append('csv_file', file);
+    formData.append('file', file);
 
     const response = await fetch('/api/children/import', {
       method: 'POST',
