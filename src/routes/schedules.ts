@@ -103,6 +103,7 @@ scheduleRoutes.post('/', async (c) => {
         am_snack_flag?: number;
         pm_snack_flag?: number;
         dinner_flag?: number;
+        breakfast_flag?: number;
       }>;
     };
 
@@ -129,7 +130,7 @@ scheduleRoutes.post('/', async (c) => {
     let deleted = 0;
 
     for (const dayData of body.days) {
-      const { day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag } = dayData;
+      const { day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, breakfast_flag } = dayData;
       
       if (!day || day < 1 || day > 31) continue;
 
@@ -146,8 +147,8 @@ scheduleRoutes.post('/', async (c) => {
       const planId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
 
       await db.prepare(`
-        INSERT INTO schedule_plans (id, child_id, year, month, day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UI入力')
+        INSERT INTO schedule_plans (id, child_id, year, month, day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, breakfast_flag, source_file)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UI入力')
         ON CONFLICT(child_id, year, month, day) DO UPDATE SET
           planned_start = excluded.planned_start,
           planned_end = excluded.planned_end,
@@ -155,11 +156,12 @@ scheduleRoutes.post('/', async (c) => {
           am_snack_flag = excluded.am_snack_flag,
           pm_snack_flag = excluded.pm_snack_flag,
           dinner_flag = excluded.dinner_flag,
+          breakfast_flag = excluded.breakfast_flag,
           source_file = 'UI入力'
       `).bind(
         planId, body.child_id, body.year, body.month, day,
         planned_start || null, planned_end || null,
-        lunch_flag ?? 0, am_snack_flag ?? 0, pm_snack_flag ?? 0, dinner_flag ?? 0
+        lunch_flag ?? 0, am_snack_flag ?? 0, pm_snack_flag ?? 0, dinner_flag ?? 0, breakfast_flag ?? 0
       ).run();
       upserted++;
     }
