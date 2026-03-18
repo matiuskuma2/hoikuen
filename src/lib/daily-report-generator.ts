@@ -34,6 +34,13 @@ export interface DailyReportInput {
 
 const WEEKDAYS_JP = ['日', '月', '火', '水', '木', '金', '土'];
 
+/** HH:MM:SS or HH:MM → short H:MM */
+function shortTime(t: string): string {
+  if (!t) return '';
+  const m = t.match(/^0?(\d{1,2}):(\d{2})/);
+  return m ? `${parseInt(m[1])}:${m[2]}` : t;
+}
+
 /**
  * 日報Excelを生成
  */
@@ -364,6 +371,210 @@ export function generateDailyReportExcel(input: DailyReportInput): ArrayBuffer {
     ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 16 } }];
 
     XLSX.utils.book_append_sheet(wb, ws, '時間外保育');
+  }
+
+  // ═══════════════════════════════════
+  // Sheet 5: 児童実績表申請（大学提出用）
+  // 園児ごとの日別：登園時間/降園時間/一時利用フラグ/早朝/延長/夜間/病児
+  // ═══════════════════════════════════
+  {
+    const data: (string | number | null)[][] = [];
+    data.push([`${year}年${month}月 児童実績表申請`]);
+    data.push([]);
+
+    // Header row 1: column labels
+    const hdr1: (string | number | null)[] = ['No', 'クラス', '氏名', '区分'];
+    for (let d = 1; d <= daysInMonth; d++) {
+      hdr1.push(`${d}日(${getWeekday(d)})`);
+    }
+    hdr1.push('出席日数', '一時利用日数', '早朝回数', '延長回数', '夜間回数', '病児回数');
+    data.push(hdr1);
+
+    // Subheader row: explain what each day cell contains
+    const hdr2: (string | number | null)[] = [null, null, null, null];
+    for (let d = 1; d <= daysInMonth; d++) {
+      hdr2.push('登園-降園');
+    }
+    hdr2.push(null, null, null, null, null, null);
+    data.push(hdr2);
+
+    sortedChildren.forEach((child, idx) => {
+      const cls = ageClassToLabel(child.age_class, child.enrollment_type);
+      const row: (string | number | null)[] = [idx + 1, cls, child.name, child.enrollment_type];
+
+      let presentDays = 0;
+      let spotDays = 0;
+      let earlyCount = 0;
+      let extCount = 0;
+      let nightCount = 0;
+      let sickCount = 0;
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const fact = usageFacts.find(f => f.child_id === child.id && f.day === d);
+        const plan = schedulePlans.find(p => p.child_id === child.id && p.day === d);
+        const attend = attendanceRecords.find(a => a.child_id === child.id && a.day === d);
+
+        if (!fact || fact.attendance_status === 'absent_no_plan') {
+          row.push(null);
+        } else if (fact.attendance_status === 'absent') {
+          row.push('欠席');
+        } else {
+          // Show actual check-in/out or planned times
+          const checkin = attend?.actual_checkin || plan?.planned_start || '';
+          const checkout = attend?.actual_checkout || plan?.planned_end || '';
+          const timeStr = checkin && checkout ? `${shortTime(checkin)}-${shortTime(checkout)}` : (checkin || checkout || '○');
+
+          // Annotate with flags
+          const flags: string[] = [];
+          if (child.enrollment_type === '一時') { flags.push('一時'); spotDays++; }
+          if (fact.is_early_morning) { flags.push('早'); earlyCount++; }
+          if (fact.is_extension) { flags.push('延'); extCount++; }
+          if (fact.is_night) { flags.push('夜'); nightCount++; }
+          if (fact.is_sick) { flags.push('病'); sickCount++; }
+
+          const flagStr = flags.length > 0 ? ` [${flags.join(',')}]` : '';
+          row.push(timeStr + flagStr);
+          presentDays++;
+        }
+      }
+
+      row.push(presentDays, spotDays, earlyCount, extCount, nightCount, sickCount);
+      data.push(row);
+    });
+
+    // Totals row
+    data.push([]);
+    const totalRow: (string | number | null)[] = [null, null, '合計', null];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dayFacts = usageFacts.filter(f =>
+        f.day === d && ['present', 'late_arrive', 'early_leave'].includes(f.attendance_status)
+      );
+      totalRow.push(dayFacts.length > 0 ? dayFacts.length : null);
+    }
+    // sum columns
+    const allPresent = usageFacts.filter(f => ['present', 'late_arrive', 'early_leave'].includes(f.attendance_status));
+    totalRow.push(
+      allPresent.length,
+      allPresent.filter(f => {
+        const child = children.find(c => c.id === f.child_id);
+        return child?.enrollment_type === '一時';
+      }).length,
+      allPresent.filter(f => f.is_early_morning === 1).length,
+      allPresent.filter(f => f.is_extension === 1).length,
+      allPresent.filter(f => f.is_night === 1).length,
+      allPresent.filter(f => f.is_sick === 1).length,
+    );
+    data.push(totalRow);
+
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    ws['!cols'] = [
+      { wch: 4 }, { wch: 7 }, { wch: 14 }, { wch: 5 },
+      ...Array.from({ length: daysInMonth }, () => ({ wch: 14 })),
+      { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 7 },
+    ];
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: Math.min(daysInMonth + 9, 40) } }];
+
+    XLSX.utils.book_append_sheet(wb, ws, '児童実績表申請');
+  }
+
+  // ═══════════════════════════════════
+  // Sheet 6: 給食実数表（個人）
+  // 園児ごとの月間食事回数一覧（朝食/昼食/AM間食/PM間食/夕食）
+  // ═══════════════════════════════════
+  {
+    const data: (string | number | null)[][] = [];
+    data.push([`${year}年${month}月 給食実数表（個人）`]);
+    data.push([]);
+
+    // Header
+    data.push([
+      'No', 'クラス', '氏名', '区分', 'アレルギー',
+      '朝食回数', '昼食回数', 'AM間食回数', 'PM間食回数', '夕食回数', '食事合計',
+      '出席日数', '朝食率%', '昼食率%',
+    ]);
+
+    let grandBreakfast = 0, grandLunch = 0, grandAm = 0, grandPm = 0, grandDinner = 0;
+
+    sortedChildren.forEach((child, idx) => {
+      const cls = ageClassToLabel(child.age_class, child.enrollment_type);
+      const childFacts = usageFacts.filter(f =>
+        f.child_id === child.id &&
+        ['present', 'late_arrive', 'early_leave'].includes(f.attendance_status)
+      );
+
+      const bf = childFacts.filter(f => f.has_breakfast === 1).length;
+      const lu = childFacts.filter(f => f.has_lunch === 1).length;
+      const am = childFacts.filter(f => f.has_am_snack === 1).length;
+      const pm = childFacts.filter(f => f.has_pm_snack === 1).length;
+      const dn = childFacts.filter(f => f.has_dinner === 1).length;
+      const total = bf + lu + am + pm + dn;
+      const present = childFacts.length;
+
+      grandBreakfast += bf;
+      grandLunch += lu;
+      grandAm += am;
+      grandPm += pm;
+      grandDinner += dn;
+
+      data.push([
+        idx + 1,
+        cls,
+        child.name,
+        child.enrollment_type,
+        child.is_allergy ? 'あり' : '',
+        bf || null,
+        lu || null,
+        am || null,
+        pm || null,
+        dn || null,
+        total || null,
+        present || null,
+        present > 0 ? Math.round((bf / present) * 100) : null,
+        present > 0 ? Math.round((lu / present) * 100) : null,
+      ]);
+    });
+
+    // Totals
+    data.push([]);
+    data.push([
+      null, null, '合計', null, null,
+      grandBreakfast, grandLunch, grandAm, grandPm, grandDinner,
+      grandBreakfast + grandLunch + grandAm + grandPm + grandDinner,
+      null, null, null,
+    ]);
+
+    // Per-day meal totals breakdown
+    data.push([]);
+    data.push(['【日別食事提供数】']);
+    data.push(['日', '曜日', '出席', '朝食', '昼食', 'AM間食', 'PM間食', '夕食']);
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dayFacts = usageFacts.filter(f =>
+        f.day === d && ['present', 'late_arrive', 'early_leave'].includes(f.attendance_status)
+      );
+      if (dayFacts.length === 0) continue;
+
+      data.push([
+        d,
+        getWeekday(d),
+        dayFacts.length,
+        dayFacts.filter(f => f.has_breakfast === 1).length || null,
+        dayFacts.filter(f => f.has_lunch === 1).length || null,
+        dayFacts.filter(f => f.has_am_snack === 1).length || null,
+        dayFacts.filter(f => f.has_pm_snack === 1).length || null,
+        dayFacts.filter(f => f.has_dinner === 1).length || null,
+      ]);
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    ws['!cols'] = [
+      { wch: 4 }, { wch: 7 }, { wch: 14 }, { wch: 5 }, { wch: 9 },
+      { wch: 8 }, { wch: 8 }, { wch: 9 }, { wch: 9 }, { wch: 8 },
+      { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 },
+    ];
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 13 } }];
+
+    XLSX.utils.book_append_sheet(wb, ws, '給食実数表（個人）');
   }
 
   // Write to buffer

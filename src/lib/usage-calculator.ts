@@ -12,6 +12,7 @@ import {
   type Child,
   type UsageFact,
   type PricingRules,
+  TIME_BOUNDARIES,
   toMinutes,
   formatTimeNoLeadingZero
 } from '../types/index';
@@ -142,19 +143,14 @@ export function computeUsageFact(
   const startMin = toMinutes(fact.billing_start!);
   const endMin = fact.billing_end ? toMinutes(fact.billing_end) : null;
 
-  // ⚠️ 懸念点: 延長保育の閾値が excel-parser.ts と異なる
-  // excel-parser.ts: ext_start=1200(20:00) — ファイルアップロード経由のダッシュボード
-  // usage-calculator.ts: extension_start=1080(18:00) from PricingRules — DB 経由の請求計算
-  // schedules.ts: extension=1200(20:00) — DB スケジュールダッシュボード
-  // TODO: 要確認 — ビジネスルール: 延長保育は 18:00 以降か 20:00 以降か？
-  // トレードオフ: 
-  //   - 18:00 は一般的な延長保育開始時刻（保育料請求の基準）
-  //   - 20:00 は夜間保育に近い閾値（別枠の夜間料金の基準かもしれない）
-  //   - PricingRules に time_boundaries があるため、ここでは rules 準拠が正しい可能性が高い
-  const earlyStart = toMinutes(rules.time_boundaries.early_start); // 420
-  const earlyEnd = toMinutes(rules.time_boundaries.early_end);     // 450
-  const extStart = toMinutes(rules.time_boundaries.extension_start); // 1080
-  const nightStart = toMinutes(rules.time_boundaries.night_start);   // 1200
+  // ★ 木村さん要件確定値: TIME_BOUNDARIES 定数を優先（DBの値が古い場合に安全）
+  // 早朝保育料: 7:00-7:30 (420-450)
+  // 延長保育料: 20:00-21:00 (1200-1260)
+  // 夜間保育料: 21:00以降 (1260+)
+  const earlyStart = TIME_BOUNDARIES.early_start; // 420 (7:00)
+  const earlyEnd = TIME_BOUNDARIES.early_end;     // 450 (7:30)
+  const extStart = TIME_BOUNDARIES.extension_start; // 1200 (20:00)
+  const nightStart = TIME_BOUNDARIES.night_start;   // 1260 (21:00)
 
   // Early morning: 7:00-7:30
   fact.is_early_morning = (startMin < earlyEnd && startMin >= earlyStart) ? 1 : 0;

@@ -186,11 +186,14 @@ childRoutes.delete('/:id', async (c) => {
 export default childRoutes;
 
 // ═══════════════════════════════════
-// POST /api/children/import — 園児CSVインポート（クラス判定付き）
+// POST /api/children/import — 園児CSVインポート（クラス判定付き・バッチSQL版）
 // ═══════════════════════════════════
 // CSV列: クラス名, 氏名(姓), 氏名(名), 生年月日, ルクミーID, ...
 // クラス名が「一時預かり」「一時」→ enrollment_type = '一時'
 // それ以外 → enrollment_type = '月極'、birth_date → age_class 自動計算
+//
+// v2.1: バッチSQL化 — 既存園児一括取得 + UPSERT文をD1 batch() で実行
+//       "Too many API requests" を回避
 childRoutes.post('/import', async (c) => {
   try {
     const formData = await c.req.formData();
@@ -212,6 +215,23 @@ childRoutes.post('/import', async (c) => {
 
     const now = new Date();
     const fiscalYear = getFiscalYear(now.getFullYear(), now.getMonth() + 1);
+
+    // ── 既存園児を一括取得（ループ内の個別SELECTを排除）──
+    const allChildrenResult = await db.prepare(
+      `SELECT * FROM children WHERE nursery_id = ?`
+    ).bind(NURSERY_ID).all();
+    const existingChildren = allChildrenResult.results as Record<string, unknown>[];
+
+    // 3つのインデックスを構築: lukumi_id, name(正規化), name(空白除去)
+    const byLukumiId = new Map<string, Record<string, unknown>>();
+    const byName = new Map<string, Record<string, unknown>>();
+    const byNameNoSpace = new Map<string, Record<string, unknown>>();
+    for (const ch of existingChildren) {
+      if (ch.lukumi_id) byLukumiId.set(String(ch.lukumi_id), ch);
+      const n = String(ch.name || '').replace(/\s+/g, ' ').trim();
+      byName.set(n, ch);
+      byNameNoSpace.set(n.replace(/ /g, ''), ch);
+    }
 
     // Parse header
     const header = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
@@ -247,7 +267,6 @@ childRoutes.post('/import', async (c) => {
     // Pass 2: includes match (only for patterns of length >= 2, skip already matched)
     for (let i = 0; i < header.length; i++) {
       const h = header[i];
-      // Skip columns already assigned
       if (Object.values(colIdx).includes(i)) continue;
       for (const [field, patterns] of Object.entries(colPatterns)) {
         if (field in colIdx) continue;
@@ -267,8 +286,10 @@ childRoutes.post('/import', async (c) => {
     let skippedDupRows = 0;
 
     // ── 重複行検出: ルクミーCSV は「姓 名」行と「姓名 フリガナ」行が交互に来る場合がある
-    // 同一園児が2行になるのを防ぐため、名前のセットで重複を検出する
     const seenNames = new Set<string>();
+
+    // ── バッチ用SQL文を収集 ──
+    const stmts: D1PreparedStatement[] = [];
 
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
@@ -283,7 +304,6 @@ childRoutes.post('/import', async (c) => {
         const first = 'firstname' in colIdx ? (cols[colIdx.firstname] || '') : '';
         name = `${sur} ${first}`.trim();
       } else {
-        // Fallback: assume col 1 is surname, col 2 is firstname
         name = `${cols[1] || ''} ${cols[2] || ''}`.trim();
       }
 
@@ -293,31 +313,20 @@ childRoutes.post('/import', async (c) => {
       }
 
       // ── ルクミーCSV重複行スキップ ──
-      // ルクミーCSVは「姓 名」行に続いて「姓名 フリガナ」行がある場合がある
-      // 例: 行1「吉田, 希子, ...」→ 行2「吉田 希子, よしだ きこ, ...」
-      // 後者はフリガナ行なので、前の園児のサブデータとしてスキップする
       const nameNormForDedup = name.replace(/\s+/g, '');
-
-      // フリガナ行の判定: 名前がひらがな/カタカナを含み、かつ既に漢字名で登録済みの園児のフリガナっぽい場合
-      // 具体的には: 「漢字姓名 ふりがな」形式（スペース区切りで4語以上）を検出
       const nameParts = name.split(/\s+/);
+      let kanaFromRow: string | null = null;
+
       if (nameParts.length >= 4) {
-        // 例: "吉田 希子 よしだ きこ" → 姓名+フリガナ形式
         const kanjiName = `${nameParts[0]} ${nameParts[1]}`;
         const kanjiNameNoSpace = `${nameParts[0]}${nameParts[1]}`;
         if (seenNames.has(kanjiNameNoSpace)) {
-          // この行はフリガナ行 → スキップしてフリガナ情報を前の園児に付与
           skippedDupRows++;
-          const kanaStr = nameParts.slice(2).join(' ');
-          // フリガナは次のUPSERTで反映するため、nameを漢字名に変換
+          kanaFromRow = nameParts.slice(2).join(' ');
           name = kanjiName;
-          // seenNames は更新不要（既に存在する）
         }
       }
-      // 名前にルクミーIDがなく、かつ前行と同じ漢字名なら重複行
       if (seenNames.has(nameNormForDedup)) {
-        // 同一名前の2回目 → フリガナや追加情報の行かもしれないが、重複登録を防ぐ
-        // lukumiIdがあればUPDATE、なければスキップ
         const lukumiIdCheck = 'lukumi_id' in colIdx ? (cols[colIdx.lukumi_id] || null) : null;
         if (!lukumiIdCheck) {
           skippedDupRows++;
@@ -326,7 +335,7 @@ childRoutes.post('/import', async (c) => {
       }
       seenNames.add(nameNormForDedup);
 
-      // Class name → enrollment_type determination
+      // Class name → enrollment_type
       const className = 'class_name' in colIdx ? (cols[colIdx.class_name] || '') : '';
       const rawEnrollmentType = 'enrollment_type' in colIdx ? (cols[colIdx.enrollment_type] || '') : '';
 
@@ -342,19 +351,17 @@ childRoutes.post('/import', async (c) => {
       let birthDate: string | null = null;
       if ('birth_date' in colIdx) {
         const raw = cols[colIdx.birth_date] || '';
-        // Parse various date formats
         const match = raw.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
         if (match) {
           birthDate = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
         }
       }
 
-      // Age class determination
+      // Age class
       let ageClass: number | null = null;
       if (enrollmentType === '月極' && birthDate) {
         ageClass = getAgeClassFromBirthDate(birthDate, fiscalYear);
       }
-      // Fallback: parse from class_name (e.g. "0歳児", "1歳児")
       if (ageClass === null && enrollmentType === '月極') {
         const ageMatch = className.match(/(\d)歳/);
         if (ageMatch) ageClass = parseInt(ageMatch[1]);
@@ -363,77 +370,73 @@ childRoutes.post('/import', async (c) => {
       // Lukumi ID
       const lukumiId = 'lukumi_id' in colIdx ? (cols[colIdx.lukumi_id] || null) : null;
 
-      // Kana — prefer kana_fullname (園児ふりがな), fallback to sei+mei
-      let nameKana: string | null = null;
-      if ('kana_fullname' in colIdx) {
-        nameKana = cols[colIdx.kana_fullname]?.trim() || null;
-      } else {
-        const kanaSei = 'kana_sei' in colIdx ? (cols[colIdx.kana_sei] || '') : '';
-        const kanaMei = 'kana_mei' in colIdx ? (cols[colIdx.kana_mei] || '') : '';
-        nameKana = `${kanaSei} ${kanaMei}`.trim() || null;
-      }
-
-      // Check if child already exists (by name or lukumi_id)
-      // Normalize name for comparison: remove extra whitespace
-      const nameNorm = name.replace(/\s+/g, ' ').trim();
-      let existing: Record<string, unknown> | null = null;
-      if (lukumiId) {
-        existing = await db.prepare(
-          `SELECT * FROM children WHERE nursery_id = ? AND lukumi_id = ?`
-        ).bind(NURSERY_ID, lukumiId).first() as Record<string, unknown> | null;
-      }
-      if (!existing) {
-        existing = await db.prepare(
-          `SELECT * FROM children WHERE nursery_id = ? AND name = ?`
-        ).bind(NURSERY_ID, nameNorm).first() as Record<string, unknown> | null;
-      }
-      if (!existing) {
-        // Fallback: try matching without spaces
-        const nameNoSpace = nameNorm.replace(/ /g, '');
-        const allChildren = await db.prepare(
-          `SELECT * FROM children WHERE nursery_id = ?`
-        ).bind(NURSERY_ID).all();
-        for (const ch of allChildren.results) {
-          const chName = String((ch as Record<string, unknown>).name || '').replace(/\s+/g, '');
-          if (chName === nameNoSpace) {
-            existing = ch as Record<string, unknown>;
-            break;
-          }
+      // Kana
+      let nameKana: string | null = kanaFromRow;
+      if (!nameKana) {
+        if ('kana_fullname' in colIdx) {
+          nameKana = cols[colIdx.kana_fullname]?.trim() || null;
+        } else {
+          const kanaSei = 'kana_sei' in colIdx ? (cols[colIdx.kana_sei] || '') : '';
+          const kanaMei = 'kana_mei' in colIdx ? (cols[colIdx.kana_mei] || '') : '';
+          nameKana = `${kanaSei} ${kanaMei}`.trim() || null;
         }
       }
 
+      // ── メモリ内で既存園児を検索（DBアクセス不要）──
+      const nameNorm = name.replace(/\s+/g, ' ').trim();
+      let existing: Record<string, unknown> | null = null;
+      if (lukumiId) {
+        existing = byLukumiId.get(lukumiId) || null;
+      }
+      if (!existing) {
+        existing = byName.get(nameNorm) || null;
+      }
+      if (!existing) {
+        existing = byNameNoSpace.get(nameNorm.replace(/ /g, '')) || null;
+      }
+
       if (existing) {
-        // Update existing
-        await db.prepare(`
-          UPDATE children SET
-            name_kana = COALESCE(?, name_kana),
-            birth_date = COALESCE(?, birth_date),
-            age_class = COALESCE(?, age_class),
-            enrollment_type = ?,
-            lukumi_id = COALESCE(?, lukumi_id),
-            updated_at = datetime('now')
-          WHERE id = ?
-        `).bind(
-          nameKana, birthDate, ageClass, enrollmentType, lukumiId,
-          existing.id as string,
-        ).run();
+        // Update existing — collect as batch statement
+        stmts.push(
+          db.prepare(`
+            UPDATE children SET
+              name_kana = COALESCE(?, name_kana),
+              birth_date = COALESCE(?, birth_date),
+              age_class = COALESCE(?, age_class),
+              enrollment_type = ?,
+              lukumi_id = COALESCE(?, lukumi_id),
+              updated_at = datetime('now')
+            WHERE id = ?
+          `).bind(
+            nameKana, birthDate, ageClass, enrollmentType, lukumiId,
+            existing.id as string,
+          )
+        );
         updated++;
         results.push({ name, age_class: ageClass, enrollment_type: enrollmentType, action: 'updated' });
       } else {
-        // Create new
+        // Create new — collect as batch statement
         const childId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
         const viewToken = Array.from(crypto.getRandomValues(new Uint8Array(16)))
           .map(b => b.toString(16).padStart(2, '0')).join('');
 
-        await db.prepare(`
-          INSERT INTO children (id, nursery_id, lukumi_id, name, name_kana, birth_date, age_class, enrollment_type, view_token)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          childId, NURSERY_ID, lukumiId, name, nameKana, birthDate, ageClass, enrollmentType, viewToken,
-        ).run();
+        stmts.push(
+          db.prepare(`
+            INSERT INTO children (id, nursery_id, lukumi_id, name, name_kana, birth_date, age_class, enrollment_type, view_token)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            childId, NURSERY_ID, lukumiId, nameNorm, nameKana, birthDate, ageClass, enrollmentType, viewToken,
+          )
+        );
         created++;
-        results.push({ name, age_class: ageClass, enrollment_type: enrollmentType, action: 'created' });
+        results.push({ name: nameNorm, age_class: ageClass, enrollment_type: enrollmentType, action: 'created' });
       }
+    }
+
+    // ── バッチ実行（80件チャンクで "Too many API requests" 回避）──
+    const CHUNK = 80;
+    for (let i = 0; i < stmts.length; i += CHUNK) {
+      await db.batch(stmts.slice(i, i + CHUNK));
     }
 
     return c.json({

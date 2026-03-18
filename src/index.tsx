@@ -92,6 +92,19 @@ app.route('/api/line', lineRoutes);
 app.route('/api/upload', uploadRoutes);
 app.route('/api/generate', generateRoutes);
 
+// ═══════════════════════════════════════════
+// Staff pages: 日次情報 & 園児登園確認表（印刷対応）
+// ═══════════════════════════════════════════
+app.get('/staff/daily/:year/:month/:day?', (c) => {
+  const year = c.req.param('year') || '';
+  const month = c.req.param('month') || '';
+  const day = c.req.param('day') || '';
+  if (!/^\d{4}$/.test(year) || !/^\d{1,2}$/.test(month)) {
+    return c.text('Invalid date', 400);
+  }
+  return c.html(staffDailyPage(year, month, day));
+});
+
 // Main UI HTML
 function mainPage(): string {
   return `<!DOCTYPE html>
@@ -1344,7 +1357,7 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>利用予定カレンダー — あゆっこ</title>
+  <title>利用予定入力 — あゆっこ</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <style>
@@ -1353,17 +1366,27 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
     .cal-cell.no-plan { background: #fff; }
     .cal-cell.weekend { background: #fef2f2; }
     .cal-cell.weekend.has-plan { background: #dbeafe; border-left: 3px solid #3b82f6; }
+    .cal-cell.editing { box-shadow: 0 0 0 2px #f59e0b; }
+    .slide-up { animation: slideUp 0.3s ease-out; }
+    @keyframes slideUp { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
   </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
+<body class="bg-gray-50 min-h-screen pb-20">
   <header class="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-10">
-    <div class="max-w-lg mx-auto px-4 py-3 flex items-center gap-3">
-      <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-        <i class="fas fa-calendar-alt text-white text-sm"></i>
+    <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+          <i class="fas fa-calendar-alt text-white text-sm"></i>
+        </div>
+        <div>
+          <h1 class="text-sm font-bold text-gray-800">あゆっこ 利用予定入力</h1>
+          <p id="child-info" class="text-xs text-gray-500">読み込み中...</p>
+        </div>
       </div>
-      <div>
-        <h1 class="text-sm font-bold text-gray-800">あゆっこ 利用予定カレンダー</h1>
-        <p id="child-info" class="text-xs text-gray-500">読み込み中...</p>
+      <div class="flex items-center gap-2">
+        <button onclick="toggleMode()" id="mode-btn" class="text-xs bg-amber-100 text-amber-700 px-2.5 py-1 rounded-lg font-medium">
+          <i class="fas fa-edit mr-1"></i>入力モード
+        </button>
       </div>
     </div>
   </header>
@@ -1396,6 +1419,31 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       </div>
     </div>
 
+    <!-- Edit Mode: Default times -->
+    <div id="edit-defaults" class="hidden mb-4 bg-amber-50 rounded-xl border border-amber-200 px-4 py-3 slide-up">
+      <div class="text-xs font-bold text-amber-800 mb-2"><i class="fas fa-magic mr-1"></i>一括設定（平日に適用）</div>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <div>
+          <label class="text-[10px] text-gray-600">登園時間</label>
+          <input type="time" id="def-start" value="08:30" class="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+        </div>
+        <div>
+          <label class="text-[10px] text-gray-600">降園時間</label>
+          <input type="time" id="def-end" value="17:30" class="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 mb-2">
+        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-lunch" checked class="w-3.5 h-3.5 rounded"> 昼食</label>
+        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-am" class="w-3.5 h-3.5 rounded"> 朝おやつ</label>
+        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-pm" checked class="w-3.5 h-3.5 rounded"> 午後おやつ</label>
+        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-dinner" class="w-3.5 h-3.5 rounded"> 夕食</label>
+        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-bf" class="w-3.5 h-3.5 rounded"> 朝食</label>
+      </div>
+      <button onclick="applyDefaults()" class="w-full bg-amber-500 text-white py-2 rounded-lg text-xs font-medium hover:bg-amber-600">
+        <i class="fas fa-check mr-1"></i>平日すべてに適用
+      </button>
+    </div>
+
     <!-- Calendar -->
     <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-4">
       <div class="grid grid-cols-7 bg-gray-50 border-b border-gray-200">
@@ -1410,14 +1458,14 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       <div id="cal-grid" class="grid grid-cols-7"></div>
     </div>
 
-    <!-- Day List -->
+    <!-- Day List / Edit List -->
     <div id="day-list" class="space-y-1"></div>
 
     <!-- No data state -->
     <div id="no-data" class="hidden bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
-      <i class="fas fa-calendar-times text-3xl text-gray-300 mb-3"></i>
-      <p class="text-sm text-gray-500">この月の予定はまだ提出されていません。</p>
-      <p class="text-xs text-gray-400 mt-1">LINEで予定を入力してください。</p>
+      <i class="fas fa-calendar-plus text-3xl text-gray-300 mb-3"></i>
+      <p class="text-sm text-gray-500">この月の予定はまだ入力されていません。</p>
+      <p class="text-xs text-gray-400 mt-1">上の「入力モード」をタップして予定を入力してください。</p>
     </div>
 
     <!-- Error state -->
@@ -1429,15 +1477,68 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
     <!-- Footer -->
     <div class="text-center text-xs text-gray-400 mt-6 mb-4">
       <p>滋賀医科大学学内保育所 あゆっこ</p>
-      <p class="mt-1">予定の変更はLINEから「予定入力」と送ってください</p>
     </div>
   </main>
+
+  <!-- Day Edit Modal (bottom sheet) -->
+  <div id="day-modal" class="fixed inset-0 bg-black/40 z-50 hidden flex items-end justify-center" onclick="if(event.target===this)closeDayModal()">
+    <div class="bg-white rounded-t-2xl w-full max-w-lg slide-up" onclick="event.stopPropagation()">
+      <div class="px-5 py-3 border-b border-gray-200 flex items-center justify-between">
+        <h3 id="modal-title" class="text-sm font-bold text-gray-800"></h3>
+        <button onclick="closeDayModal()" class="text-gray-400 hover:text-gray-600 p-1"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="px-5 py-4 space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-gray-600 font-medium">登園時間</label>
+            <input type="time" id="modal-start" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mt-1">
+          </div>
+          <div>
+            <label class="text-xs text-gray-600 font-medium">降園時間</label>
+            <input type="time" id="modal-end" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mt-1">
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-3">
+          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-lunch" class="w-4 h-4 rounded"> 昼食</label>
+          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-am" class="w-4 h-4 rounded"> 朝おやつ</label>
+          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-pm" class="w-4 h-4 rounded"> 午後おやつ</label>
+          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-dinner" class="w-4 h-4 rounded"> 夕食</label>
+          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-bf" class="w-4 h-4 rounded"> 朝食</label>
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button onclick="clearDay()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-200">
+            <i class="fas fa-times mr-1"></i>休み
+          </button>
+          <button onclick="saveDay()" class="flex-1 bg-blue-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700">
+            <i class="fas fa-check mr-1"></i>保存
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fixed bottom save bar (edit mode) -->
+  <div id="save-bar" class="hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-40 slide-up">
+    <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="text-xs text-gray-600">
+        <span id="unsaved-count" class="text-amber-600 font-bold">0</span>件の変更があります
+      </div>
+      <button onclick="submitAll()" id="btn-submit" class="bg-green-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-green-700">
+        <i class="fas fa-paper-plane mr-1"></i>予定を提出
+      </button>
+    </div>
+  </div>
 
   <script>
     const VIEW_TOKEN = '${token}';
     let currentYear = parseInt('${defaultYear}');
     let currentMonth = parseInt('${defaultMonth}');
     let scheduleData = null;
+    let editMode = false;
+    let editingDay = null;
+    let childId = null;
+    // Local edits: { day: { start, end, lunch, am, pm, dinner, bf, deleted } }
+    let localEdits = {};
 
     async function loadSchedule() {
       const grid = document.getElementById('cal-grid');
@@ -1449,6 +1550,8 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       dayList.innerHTML = '';
       noData.classList.add('hidden');
       errorState.classList.add('hidden');
+      localEdits = {};
+      updateSaveBar();
 
       document.getElementById('month-title').textContent = currentYear + '年' + currentMonth + '月';
 
@@ -1459,32 +1562,12 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
           throw new Error(err.error || 'HTTP ' + res.status);
         }
         scheduleData = await res.json();
+        childId = scheduleData.child.id;
 
-        // Child info
         const ch = scheduleData.child;
         document.getElementById('child-info').textContent = ch.name + '（' + ch.enrollment_type + '）';
 
-        const days = scheduleData.days || [];
-        const planned = days.filter(d => d.has_plan);
-
-        if (planned.length === 0) {
-          grid.innerHTML = '';
-          noData.classList.remove('hidden');
-          document.getElementById('sum-days').textContent = '0';
-          document.getElementById('sum-lunch').textContent = '0';
-          document.getElementById('sum-snack').textContent = '0';
-          return;
-        }
-
-        // Summary
-        document.getElementById('sum-days').textContent = planned.length;
-        document.getElementById('sum-lunch').textContent = planned.filter(d => d.lunch_flag).length;
-        const snackCount = planned.filter(d => d.am_snack_flag || d.pm_snack_flag).length;
-        document.getElementById('sum-snack').textContent = snackCount;
-
-        renderCalendar(days);
-        renderDayList(days);
-
+        renderAll();
       } catch (e) {
         grid.innerHTML = '';
         errorState.classList.remove('hidden');
@@ -1492,12 +1575,47 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       }
     }
 
+    function renderAll() {
+      if (!scheduleData) return;
+      const days = scheduleData.days || [];
+      const planned = days.filter(d => getDayData(d).has_plan);
+      
+      document.getElementById('sum-days').textContent = planned.length;
+      document.getElementById('sum-lunch').textContent = planned.filter(d => getDayData(d).lunch).length;
+      document.getElementById('sum-snack').textContent = planned.filter(d => getDayData(d).am || getDayData(d).pm).length;
+
+      const noData = document.getElementById('no-data');
+      if (planned.length === 0 && !editMode) {
+        noData.classList.remove('hidden');
+      } else {
+        noData.classList.add('hidden');
+      }
+
+      renderCalendar(days);
+      renderDayList(days);
+    }
+
+    function getDayData(d) {
+      const edit = localEdits[d.day];
+      if (edit) {
+        if (edit.deleted) return { has_plan: false, start: null, end: null, lunch: false, am: false, pm: false, dinner: false, bf: false };
+        return {
+          has_plan: !!(edit.start || edit.end),
+          start: edit.start, end: edit.end,
+          lunch: edit.lunch, am: edit.am, pm: edit.pm, dinner: edit.dinner, bf: edit.bf,
+        };
+      }
+      return {
+        has_plan: d.has_plan,
+        start: d.planned_start, end: d.planned_end,
+        lunch: !!d.lunch_flag, am: !!d.am_snack_flag, pm: !!d.pm_snack_flag, dinner: !!d.dinner_flag, bf: !!d.breakfast_flag,
+      };
+    }
+
     function renderCalendar(days) {
       const grid = document.getElementById('cal-grid');
-      // Find first day of week (Mon=0)
       const firstDate = new Date(currentYear, currentMonth - 1, 1);
-      const firstDow = firstDate.getDay();
-      const startOffset = (firstDow + 6) % 7;
+      const startOffset = (firstDate.getDay() + 6) % 7;
 
       let html = '';
       for (let i = 0; i < startOffset; i++) {
@@ -1505,30 +1623,35 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       }
 
       days.forEach(d => {
+        const dd = getDayData(d);
         const isWE = d.is_weekend;
-        const hasPlan = d.has_plan;
+        const edited = localEdits[d.day] !== undefined;
         let cls = 'cal-cell border-b border-r border-gray-100 p-1.5 cursor-pointer';
         cls += isWE ? ' weekend' : '';
-        cls += hasPlan ? ' has-plan' : ' no-plan';
+        cls += dd.has_plan ? ' has-plan' : ' no-plan';
+        cls += edited ? ' editing' : '';
 
         const dateColor = isWE ? 'text-red-400' : 'text-gray-700';
-        const timeStr = hasPlan && d.planned_start && d.planned_end
-          ? '<div class="text-[9px] text-blue-600 mt-0.5">' + shortTime(d.planned_start) + '-' + shortTime(d.planned_end) + '</div>'
-          : (isWE ? '' : '<div class="text-[9px] text-gray-300 mt-0.5">—</div>');
+        const onClick = editMode ? 'openDayModal(' + d.day + ')' : 'scrollToDay(' + d.day + ')';
+        let timeStr = '';
+        if (dd.has_plan && dd.start && dd.end) {
+          timeStr = '<div class="text-[9px] text-blue-600 mt-0.5">' + shortTime(dd.start) + '-' + shortTime(dd.end) + '</div>';
+        } else if (!isWE && editMode) {
+          timeStr = '<div class="text-[9px] text-amber-400 mt-0.5"><i class="fas fa-plus"></i></div>';
+        }
 
         const meals = [];
-        if (d.lunch_flag) meals.push('🍱');
-        if (d.am_snack_flag) meals.push('🍪');
-        if (d.pm_snack_flag) meals.push('🍪');
-        if (d.dinner_flag) meals.push('🍽');
+        if (dd.lunch) meals.push('🍱');
+        if (dd.am) meals.push('🍪');
+        if (dd.pm) meals.push('🍪');
+        if (dd.dinner) meals.push('🍽');
         const mealStr = meals.length > 0 ? '<div class="text-[8px] mt-0.5">' + meals.join('') + '</div>' : '';
 
-        html += '<div class="' + cls + '" onclick="scrollToDay(' + d.day + ')">' +
-          '<div class="text-xs font-semibold ' + dateColor + '">' + d.day + '</div>' +
+        html += '<div class="' + cls + '" onclick="' + onClick + '">' +
+          '<div class="text-xs font-semibold ' + dateColor + '">' + d.day + (edited ? '<span class="text-amber-500 ml-0.5">*</span>' : '') + '</div>' +
           timeStr + mealStr + '</div>';
       });
 
-      // Trailing empty cells
       const totalCells = startOffset + days.length;
       const remainder = totalCells % 7;
       if (remainder > 0) {
@@ -1536,39 +1659,194 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
           html += '<div class="border-b border-r border-gray-100 bg-gray-50/50 p-1"></div>';
         }
       }
-
       grid.innerHTML = html;
     }
 
     function renderDayList(days) {
       const list = document.getElementById('day-list');
-      const planned = days.filter(d => d.has_plan);
+      const allDays = editMode ? days.filter(d => !d.is_weekend) : days.filter(d => getDayData(d).has_plan);
 
-      list.innerHTML = '<h3 class="text-xs font-bold text-gray-600 mb-2 mt-2"><i class="fas fa-list mr-1"></i>登園予定一覧 (' + planned.length + '日)</h3>' +
-        planned.map(d => {
-          const tStr = d.planned_start && d.planned_end
-            ? shortTime(d.planned_start) + ' - ' + shortTime(d.planned_end)
-            : '時間未定';
+      if (allDays.length === 0) { list.innerHTML = ''; return; }
+
+      const wds = ['日','月','火','水','木','金','土'];
+      list.innerHTML = '<h3 class="text-xs font-bold text-gray-600 mb-2 mt-2"><i class="fas fa-list mr-1"></i>' +
+        (editMode ? '平日一覧（タップで編集）' : '登園予定一覧 (' + allDays.filter(d => getDayData(d).has_plan).length + '日)') + '</h3>' +
+        allDays.map(d => {
+          const dd = getDayData(d);
+          const wd = d.weekday || wds[new Date(currentYear, currentMonth-1, d.day).getDay()];
+          const edited = localEdits[d.day] !== undefined;
+
+          if (!dd.has_plan && !editMode) return '';
+
+          const tStr = dd.start && dd.end ? shortTime(dd.start) + ' - ' + shortTime(dd.end) : (editMode ? 'タップして入力' : '時間未定');
           const meals = [];
-          if (d.lunch_flag) meals.push('<span class="text-green-600">🍱昼食</span>');
-          if (d.am_snack_flag) meals.push('<span class="text-amber-600">🍪朝</span>');
-          if (d.pm_snack_flag) meals.push('<span class="text-amber-600">🍪午後</span>');
-          if (d.dinner_flag) meals.push('<span class="text-orange-600">🍽夕食</span>');
-          const mealStr = meals.length > 0 ? meals.join(' ') : '';
-          const srcBadge = d.source === 'LINE'
-            ? '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded text-[9px]"><i class="fab fa-line mr-0.5"></i>LINE</span>'
-            : d.source ? '<span class="bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded text-[9px]">' + d.source + '</span>' : '';
+          if (dd.lunch) meals.push('🍱');
+          if (dd.am) meals.push('🍪');
+          if (dd.pm) meals.push('🍪');
+          if (dd.dinner) meals.push('🍽');
+          const mealStr = meals.join(' ');
 
-          return '<div id="day-' + d.day + '" class="bg-white rounded-lg shadow-sm border border-gray-200 px-3 py-2 flex items-center justify-between">' +
+          const borderCls = edited ? 'border-amber-300 bg-amber-50' : (dd.has_plan ? 'border-gray-200' : 'border-gray-100 bg-gray-50');
+          const onClick = editMode ? 'openDayModal(' + d.day + ')' : '';
+
+          return '<div id="day-' + d.day + '" class="bg-white rounded-lg shadow-sm border ' + borderCls + ' px-3 py-2 flex items-center justify-between cursor-pointer" onclick="' + onClick + '">' +
             '<div>' +
-              '<span class="text-sm font-semibold text-gray-800">' + currentMonth + '/' + d.day + ' (' + d.weekday + ')</span> ' +
-              srcBadge +
-              '<div class="text-xs text-blue-600 mt-0.5"><i class="fas fa-clock mr-0.5"></i>' + tStr + '</div>' +
+              '<span class="text-sm font-semibold text-gray-800">' + currentMonth + '/' + d.day + ' (' + wd + ')</span>' +
+              (edited ? ' <span class="text-[9px] text-amber-600 bg-amber-100 px-1 rounded">変更</span>' : '') +
+              '<div class="text-xs ' + (dd.has_plan ? 'text-blue-600' : 'text-gray-400') + ' mt-0.5"><i class="fas fa-clock mr-0.5"></i>' + tStr + '</div>' +
               (mealStr ? '<div class="text-[10px] mt-0.5">' + mealStr + '</div>' : '') +
             '</div>' +
-            '<div class="text-blue-500"><i class="fas fa-check-circle"></i></div>' +
+            (dd.has_plan ? '<div class="text-blue-500"><i class="fas fa-check-circle"></i></div>' : (editMode ? '<div class="text-gray-300"><i class="fas fa-plus-circle"></i></div>' : '')) +
           '</div>';
         }).join('');
+    }
+
+    function toggleMode() {
+      editMode = !editMode;
+      const btn = document.getElementById('mode-btn');
+      const defs = document.getElementById('edit-defaults');
+      if (editMode) {
+        btn.innerHTML = '<i class="fas fa-eye mr-1"></i>閲覧モード';
+        btn.className = 'text-xs bg-blue-100 text-blue-700 px-2.5 py-1 rounded-lg font-medium';
+        defs.classList.remove('hidden');
+      } else {
+        btn.innerHTML = '<i class="fas fa-edit mr-1"></i>入力モード';
+        btn.className = 'text-xs bg-amber-100 text-amber-700 px-2.5 py-1 rounded-lg font-medium';
+        defs.classList.add('hidden');
+      }
+      renderAll();
+      updateSaveBar();
+    }
+
+    function applyDefaults() {
+      if (!scheduleData) return;
+      const start = document.getElementById('def-start').value;
+      const end = document.getElementById('def-end').value;
+      const lunch = document.getElementById('def-lunch').checked;
+      const am = document.getElementById('def-am').checked;
+      const pm = document.getElementById('def-pm').checked;
+      const dinner = document.getElementById('def-dinner').checked;
+      const bf = document.getElementById('def-bf').checked;
+
+      for (const d of scheduleData.days) {
+        if (d.is_weekend) continue;
+        localEdits[d.day] = { start, end, lunch, am, pm, dinner, bf };
+      }
+      renderAll();
+      updateSaveBar();
+    }
+
+    function openDayModal(day) {
+      if (!editMode) return;
+      editingDay = day;
+      const d = scheduleData.days.find(x => x.day === day);
+      const dd = getDayData(d);
+      const wds = ['日','月','火','水','木','金','土'];
+      const wd = wds[new Date(currentYear, currentMonth-1, day).getDay()];
+
+      document.getElementById('modal-title').textContent = currentMonth + '月' + day + '日（' + wd + '）';
+      document.getElementById('modal-start').value = dd.start || '08:30';
+      document.getElementById('modal-end').value = dd.end || '17:30';
+      document.getElementById('modal-lunch').checked = dd.has_plan ? dd.lunch : true;
+      document.getElementById('modal-am').checked = dd.am;
+      document.getElementById('modal-pm').checked = dd.has_plan ? dd.pm : true;
+      document.getElementById('modal-dinner').checked = dd.dinner;
+      document.getElementById('modal-bf').checked = dd.bf;
+
+      document.getElementById('day-modal').classList.remove('hidden');
+    }
+
+    function closeDayModal() {
+      document.getElementById('day-modal').classList.add('hidden');
+      editingDay = null;
+    }
+
+    function saveDay() {
+      if (editingDay === null) return;
+      localEdits[editingDay] = {
+        start: document.getElementById('modal-start').value || null,
+        end: document.getElementById('modal-end').value || null,
+        lunch: document.getElementById('modal-lunch').checked,
+        am: document.getElementById('modal-am').checked,
+        pm: document.getElementById('modal-pm').checked,
+        dinner: document.getElementById('modal-dinner').checked,
+        bf: document.getElementById('modal-bf').checked,
+      };
+      closeDayModal();
+      renderAll();
+      updateSaveBar();
+    }
+
+    function clearDay() {
+      if (editingDay === null) return;
+      localEdits[editingDay] = { deleted: true };
+      closeDayModal();
+      renderAll();
+      updateSaveBar();
+    }
+
+    function updateSaveBar() {
+      const count = Object.keys(localEdits).length;
+      document.getElementById('unsaved-count').textContent = count;
+      const bar = document.getElementById('save-bar');
+      if (count > 0 && editMode) {
+        bar.classList.remove('hidden');
+      } else {
+        bar.classList.add('hidden');
+      }
+    }
+
+    async function submitAll() {
+      if (!childId || Object.keys(localEdits).length === 0) return;
+      const btn = document.getElementById('btn-submit');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>送信中...';
+
+      const days = [];
+      for (const [dayStr, edit] of Object.entries(localEdits)) {
+        const day = parseInt(dayStr);
+        if (edit.deleted) {
+          days.push({ day, planned_start: null, planned_end: null });
+        } else {
+          days.push({
+            day,
+            planned_start: edit.start || null,
+            planned_end: edit.end || null,
+            lunch_flag: edit.lunch ? 1 : 0,
+            am_snack_flag: edit.am ? 1 : 0,
+            pm_snack_flag: edit.pm ? 1 : 0,
+            dinner_flag: edit.dinner ? 1 : 0,
+            breakfast_flag: edit.bf ? 1 : 0,
+          });
+        }
+      }
+
+      try {
+        const res = await fetch('/api/schedules/submit/' + VIEW_TOKEN, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ year: currentYear, month: currentMonth, days }),
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || 'エラー');
+
+        // Success: reload
+        localEdits = {};
+        await loadSchedule();
+        editMode = false;
+        toggleMode(); // switch back to view
+        toggleMode(); // this toggles it to edit... let me fix
+        // Actually just reload
+        alert('予定を提出しました！（' + result.upserted + '日分）');
+        localEdits = {};
+        await loadSchedule();
+        if (editMode) toggleMode();
+      } catch (e) {
+        alert('エラー: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-paper-plane mr-1"></i>予定を提出';
+      }
     }
 
     function shortTime(t) {
@@ -1595,6 +1873,241 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
 
     // Init
     loadSchedule();
+  </script>
+</body>
+</html>`;
+}
+
+// ═══════════════════════════════════════════
+// Staff Daily Info & Attendance Sheet
+// ═══════════════════════════════════════════
+function staffDailyPage(defaultYear: string, defaultMonth: string, defaultDay: string): string {
+  const now = new Date();
+  const dy = defaultDay || String(now.getDate());
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日次情報 — あゆっこ</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    @media print {
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 11px; }
+      .no-print { display: none !important; }
+      .page-break { page-break-before: always; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #888; padding: 3px 6px; }
+      .print-title { font-size: 16px; font-weight: bold; margin-bottom: 8px; }
+    }
+    @media screen {
+      .print-only { display: none; }
+    }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <!-- Screen header -->
+  <header class="bg-white border-b border-gray-200 shadow-sm no-print">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 bg-teal-600 rounded-lg flex items-center justify-center">
+          <i class="fas fa-clipboard-list text-white text-sm"></i>
+        </div>
+        <div>
+          <h1 class="text-sm font-bold text-gray-800">あゆっこ 日次情報 / 園児登園確認表</h1>
+          <p class="text-xs text-gray-500">職員共有用（印刷対応）</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <input type="date" id="date-picker" class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm"
+               value="${defaultYear}-${defaultMonth.padStart(2,'0')}-${dy.padStart(2,'0')}"
+               onchange="loadDate()">
+        <button onclick="window.print()" class="bg-teal-600 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-teal-700">
+          <i class="fas fa-print mr-1"></i>印刷
+        </button>
+        <a href="/" class="text-xs text-gray-400 hover:text-gray-600 px-2"><i class="fas fa-home"></i></a>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 py-4">
+    <div id="loading" class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</div>
+
+    <!-- ═══ 日次情報 ═══ -->
+    <div id="daily-info" class="hidden">
+      <div class="print-title print-only" id="print-title-daily"></div>
+      <h2 id="daily-title" class="text-lg font-bold text-gray-800 mb-3 no-print"></h2>
+
+      <!-- Summary cards -->
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4" id="daily-summary"></div>
+
+      <!-- 園児登園確認表 -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4 overflow-x-auto">
+        <div class="px-4 py-3 border-b border-gray-100">
+          <h3 class="text-sm font-bold text-gray-800"><i class="fas fa-check-square text-teal-500 mr-1"></i>園児登園確認表</h3>
+        </div>
+        <table class="w-full text-xs" id="attendance-table">
+          <thead>
+            <tr class="bg-gray-50 text-gray-600">
+              <th class="px-2 py-2 text-left font-medium w-8">No</th>
+              <th class="px-2 py-2 text-left font-medium">クラス</th>
+              <th class="px-2 py-2 text-left font-medium">氏名</th>
+              <th class="px-2 py-2 text-center font-medium">区分</th>
+              <th class="px-2 py-2 text-center font-medium">予定登園</th>
+              <th class="px-2 py-2 text-center font-medium">予定降園</th>
+              <th class="px-2 py-2 text-center font-medium">朝食</th>
+              <th class="px-2 py-2 text-center font-medium">昼食</th>
+              <th class="px-2 py-2 text-center font-medium">朝おやつ</th>
+              <th class="px-2 py-2 text-center font-medium">午後おやつ</th>
+              <th class="px-2 py-2 text-center font-medium">夕食</th>
+              <th class="px-2 py-2 text-center font-medium">早朝</th>
+              <th class="px-2 py-2 text-center font-medium">延長</th>
+              <th class="px-2 py-2 text-center font-medium">夜間</th>
+              <th class="px-2 py-2 text-center font-medium print-only" style="width:60px">実績登園</th>
+              <th class="px-2 py-2 text-center font-medium print-only" style="width:60px">実績降園</th>
+              <th class="px-2 py-2 text-center font-medium print-only" style="width:40px">確認</th>
+            </tr>
+          </thead>
+          <tbody id="attendance-body"></tbody>
+        </table>
+      </div>
+
+      <!-- 食事サマリー -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+        <div class="px-4 py-3 border-b border-gray-100">
+          <h3 class="text-sm font-bold text-gray-800"><i class="fas fa-utensils text-green-500 mr-1"></i>食事サマリー</h3>
+        </div>
+        <div class="p-4" id="meal-summary"></div>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div id="error-state" class="hidden bg-red-50 rounded-xl border border-red-200 p-6 text-center">
+      <i class="fas fa-exclamation-triangle text-2xl text-red-400 mb-2"></i>
+      <p id="error-msg" class="text-sm text-red-600"></p>
+    </div>
+  </main>
+
+  <script>
+    let currentYear = ${defaultYear};
+    let currentMonth = ${defaultMonth};
+    let currentDay = ${dy};
+
+    async function loadDate() {
+      const picker = document.getElementById('date-picker');
+      if (picker && picker.value) {
+        const parts = picker.value.split('-');
+        currentYear = parseInt(parts[0]);
+        currentMonth = parseInt(parts[1]);
+        currentDay = parseInt(parts[2]);
+        // Update URL without reload
+        history.pushState(null, '', '/staff/daily/' + currentYear + '/' + currentMonth + '/' + currentDay);
+      }
+      await loadDayData();
+    }
+
+    async function loadDayData() {
+      document.getElementById('loading').classList.remove('hidden');
+      document.getElementById('daily-info').classList.add('hidden');
+      document.getElementById('error-state').classList.add('hidden');
+
+      try {
+        // Get dashboard data for this month
+        const res = await fetch('/api/schedules/dashboard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ year: currentYear, month: currentMonth }),
+        });
+        if (!res.ok) throw new Error('データ取得に失敗しました');
+        const data = await res.json();
+
+        const daySummary = data.daily_summary.find(d => d.day === currentDay);
+        if (!daySummary) throw new Error('指定日のデータがありません');
+
+        const wds = ['日','月','火','水','木','金','土'];
+        const wd = wds[new Date(currentYear, currentMonth-1, currentDay).getDay()];
+        const dateStr = currentYear + '年' + currentMonth + '月' + currentDay + '日（' + wd + '）';
+        
+        document.getElementById('daily-title').textContent = dateStr + ' 日次情報';
+        document.getElementById('print-title-daily').textContent = '滋賀医科大学学内保育所 あゆっこ　' + dateStr + ' 日次情報';
+
+        // Summary cards
+        const s = daySummary;
+        document.getElementById('daily-summary').innerHTML = [
+          { label: '登園予定', value: s.total_children, color: 'blue', icon: 'child' },
+          { label: '昼食', value: s.lunch_count, color: 'green', icon: 'utensils' },
+          { label: '早朝', value: s.early_morning_count, color: 'orange', icon: 'sun' },
+          { label: '延長', value: s.extension_count, color: 'purple', icon: 'clock' },
+          { label: '一時', value: s.temp_count, color: 'amber', icon: 'user-clock' },
+        ].map(c => '<div class="bg-' + c.color + '-50 rounded-lg px-3 py-2 text-center border border-' + c.color + '-200">' +
+          '<div class="text-lg font-bold text-' + c.color + '-700">' + c.value + '</div>' +
+          '<div class="text-[10px] text-' + c.color + '-500"><i class="fas fa-' + c.icon + ' mr-0.5"></i>' + c.label + '</div>' +
+        '</div>').join('');
+
+        // Attendance table
+        const children = s.children || [];
+        const tbody = document.getElementById('attendance-body');
+        if (children.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="17" class="text-center py-6 text-gray-400">この日の予定はありません</td></tr>';
+        } else {
+          tbody.innerHTML = children.map((ch, i) => {
+            const flagCell = (val) => val ? '<span class="text-green-600 font-bold">○</span>' : '';
+            return '<tr class="' + (i % 2 ? 'bg-gray-50' : '') + '">' +
+              '<td class="px-2 py-1.5 text-center text-gray-500">' + (i+1) + '</td>' +
+              '<td class="px-2 py-1.5">' + (ch.class_name || '') + '</td>' +
+              '<td class="px-2 py-1.5 font-medium">' + ch.name + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + ch.enrollment_type + '</td>' +
+              '<td class="px-2 py-1.5 text-center text-blue-600">' + shortTime(ch.planned_start) + '</td>' +
+              '<td class="px-2 py-1.5 text-center text-blue-600">' + shortTime(ch.planned_end) + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + flagCell(ch.has_breakfast) + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + flagCell(ch.has_lunch) + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + flagCell(ch.has_am_snack) + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + flagCell(ch.has_pm_snack) + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + flagCell(ch.has_dinner) + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + flagCell(ch.is_early_morning) + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + flagCell(ch.is_extension) + '</td>' +
+              '<td class="px-2 py-1.5 text-center">' + flagCell(ch.is_night) + '</td>' +
+              '<td class="px-2 py-1.5 text-center print-only"></td>' +
+              '<td class="px-2 py-1.5 text-center print-only"></td>' +
+              '<td class="px-2 py-1.5 text-center print-only"></td>' +
+            '</tr>';
+          }).join('');
+        }
+
+        // Meal summary
+        document.getElementById('meal-summary').innerHTML = '<div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-xs">' +
+          [
+            { label: '朝食', count: s.breakfast_count, icon: '🍞' },
+            { label: '昼食', count: s.lunch_count, icon: '🍱' },
+            { label: '朝おやつ', count: s.am_snack_count, icon: '🍪' },
+            { label: '午後おやつ', count: s.pm_snack_count, icon: '🍪' },
+            { label: '夕食', count: s.dinner_count, icon: '🍽' },
+            { label: 'アレルギー対応', count: children.filter(c => c.meal_allergy).length, icon: '⚠️' },
+          ].map(m => '<div class="text-center bg-gray-50 rounded-lg px-2 py-2 border border-gray-200">' +
+            '<div class="text-lg">' + m.icon + '</div>' +
+            '<div class="font-bold text-gray-800">' + m.count + '</div>' +
+            '<div class="text-gray-500">' + m.label + '</div>' +
+          '</div>').join('') + '</div>';
+
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('daily-info').classList.remove('hidden');
+
+      } catch (e) {
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('error-state').classList.remove('hidden');
+        document.getElementById('error-msg').textContent = e.message;
+      }
+    }
+
+    function shortTime(t) {
+      if (!t) return '';
+      const m = t.match(/^0?(\\d{1,2}):(\\d{2})/);
+      return m ? parseInt(m[1]) + ':' + m[2] : t;
+    }
+
+    // Init
+    loadDayData();
   </script>
 </body>
 </html>`;

@@ -500,4 +500,117 @@ scheduleRoutes.get('/view/:token/:year/:month', async (c) => {
 
 // safeToMinutes は types/index.ts から import 済み
 
+// ── Submit schedule plans via view_token (parent mobile) ──
+// POST /api/schedules/submit/:token
+// Body: { year, month, days: [{ day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, breakfast_flag }] }
+scheduleRoutes.post('/submit/:token', async (c) => {
+  try {
+    const token = c.req.param('token');
+    if (!/^[a-zA-Z0-9_-]+$/.test(token)) {
+      return c.json({ error: '無効なトークンです' }, 400);
+    }
+
+    const db = c.env.DB;
+    if (!db) return c.json({ error: 'データベース接続が利用できません' }, 500);
+
+    // Find child by view_token or id
+    let child = await db.prepare(
+      'SELECT id, name FROM children WHERE view_token = ?'
+    ).bind(token).first<{ id: string; name: string }>();
+
+    if (!child) {
+      child = await db.prepare(
+        'SELECT id, name FROM children WHERE id = ?'
+      ).bind(token).first<{ id: string; name: string }>();
+    }
+
+    if (!child) {
+      return c.json({ error: '園児が見つかりません' }, 404);
+    }
+
+    let body: {
+      year: number;
+      month: number;
+      days: Array<{
+        day: number;
+        planned_start?: string | null;
+        planned_end?: string | null;
+        lunch_flag?: number;
+        am_snack_flag?: number;
+        pm_snack_flag?: number;
+        dinner_flag?: number;
+        breakfast_flag?: number;
+      }>;
+    };
+
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'リクエストのJSONが不正です' }, 400);
+    }
+
+    if (!body.year || !body.month || !Array.isArray(body.days)) {
+      return c.json({ error: 'year, month, days[] が必要です' }, 400);
+    }
+
+    // Batch upsert/delete statements
+    const stmts: D1PreparedStatement[] = [];
+    let upserted = 0;
+    let deleted = 0;
+
+    for (const dayData of body.days) {
+      const { day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, breakfast_flag } = dayData;
+      if (!day || day < 1 || day > 31) continue;
+
+      if (!planned_start && !planned_end) {
+        stmts.push(
+          db.prepare(`DELETE FROM schedule_plans WHERE child_id = ? AND year = ? AND month = ? AND day = ?`)
+            .bind(child.id, body.year, body.month, day)
+        );
+        deleted++;
+        continue;
+      }
+
+      const planId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+      stmts.push(
+        db.prepare(`
+          INSERT INTO schedule_plans (id, child_id, year, month, day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, breakfast_flag, source_file)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '保護者Web入力')
+          ON CONFLICT(child_id, year, month, day) DO UPDATE SET
+            planned_start = excluded.planned_start,
+            planned_end = excluded.planned_end,
+            lunch_flag = excluded.lunch_flag,
+            am_snack_flag = excluded.am_snack_flag,
+            pm_snack_flag = excluded.pm_snack_flag,
+            dinner_flag = excluded.dinner_flag,
+            breakfast_flag = excluded.breakfast_flag,
+            source_file = '保護者Web入力'
+        `).bind(
+          planId, child.id, body.year, body.month, day,
+          planned_start || null, planned_end || null,
+          lunch_flag ?? 0, am_snack_flag ?? 0, pm_snack_flag ?? 0, dinner_flag ?? 0, breakfast_flag ?? 0
+        )
+      );
+      upserted++;
+    }
+
+    // Execute in batches
+    const CHUNK = 80;
+    for (let i = 0; i < stmts.length; i += CHUNK) {
+      await db.batch(stmts.slice(i, i + CHUNK));
+    }
+
+    return c.json({
+      success: true,
+      child_name: child.name,
+      upserted,
+      deleted,
+      message: `${child.name}さんの予定を保存しました (${upserted}日分)`,
+    });
+  } catch (e: any) {
+    console.error('Schedules submit error:', e);
+    return c.json({ error: e.message || '予定提出エラー' }, 500);
+  }
+});
+
 export default scheduleRoutes;
