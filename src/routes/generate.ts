@@ -81,7 +81,18 @@ generateRoutes.post('/compute', async (c) => {
     let totalFactsCreated = 0;
     let totalChargesCreated = 0;
 
+    // Helper: execute D1 batch in chunks
+    async function batchExec(stmts: D1PreparedStatement[]) {
+      const CHUNK = 80;
+      for (let i = 0; i < stmts.length; i += CHUNK) {
+        await db.batch(stmts.slice(i, i + CHUNK));
+      }
+    }
+
     // 4. For each child, compute usage_facts
+    const allFactStmts: D1PreparedStatement[] = [];
+    const allChargeStmts: D1PreparedStatement[] = [];
+
     for (const child of children) {
       const childPlans = allPlans.filter(p => p.child_id === child.id);
       const childAttend = allAttendance.filter(a => a.child_id === child.id);
@@ -98,8 +109,9 @@ generateRoutes.post('/compute', async (c) => {
         const fact = computeUsageFact(child, plan, actual, rules, year, month, day);
         facts.push(fact);
 
-        // UPSERT usage_fact
-        await db.prepare(`
+        // Collect usage_fact upsert statement
+        allFactStmts.push(
+          db.prepare(`
           INSERT INTO usage_facts (
             id, child_id, year, month, day,
             billing_start, billing_end, billing_minutes,
@@ -139,21 +151,24 @@ generateRoutes.post('/compute', async (c) => {
           fact.spot_30min_blocks,
           fact.has_breakfast, fact.has_lunch, fact.has_am_snack, fact.has_pm_snack, fact.has_dinner,
           fact.meal_allergy, fact.attendance_status, fact.exception_notes,
-        ).run();
+        ));
         totalFactsCreated++;
       }
 
       // 5. Generate charge_lines for this child
       const chargeLines = generateChargeLines(child, facts, rules, year, month);
 
-      // Delete existing charge_lines for this child/month, then insert
-      await db.prepare(
-        `DELETE FROM charge_lines WHERE child_id = ? AND year = ? AND month = ?`
-      ).bind(child.id, year, month).run();
+      // Delete existing charge_lines for this child/month
+      allChargeStmts.push(
+        db.prepare(
+          `DELETE FROM charge_lines WHERE child_id = ? AND year = ? AND month = ?`
+        ).bind(child.id, year, month)
+      );
 
       for (const cl of chargeLines) {
         if (cl.subtotal === 0 && cl.quantity === 0) continue; // Skip zero charges
-        await db.prepare(`
+        allChargeStmts.push(
+          db.prepare(`
           INSERT INTO charge_lines (
             id, child_id, year, month, charge_type,
             quantity, unit_price, subtotal, notes
@@ -162,12 +177,16 @@ generateRoutes.post('/compute', async (c) => {
             ?, ?, ?, ?
           )
         `).bind(
-          child.id, year, month, cl.charge_type,
-          cl.quantity, cl.unit_price, cl.subtotal, cl.notes,
-        ).run();
+            child.id, year, month, cl.charge_type,
+            cl.quantity, cl.unit_price, cl.subtotal, cl.notes,
+          ));
         totalChargesCreated++;
       }
     }
+
+    // Execute all DB operations in batches
+    if (allFactStmts.length > 0) await batchExec(allFactStmts);
+    if (allChargeStmts.length > 0) await batchExec(allChargeStmts);
 
     return c.json({
       success: true,
@@ -305,7 +324,18 @@ generateRoutes.post('/all', async (c) => {
 
       const daysInMonth = new Date(year, month, 0).getDate();
 
+      // Helper: execute D1 batch in chunks
+      async function batchExec2(stmts: D1PreparedStatement[]) {
+        const CHUNK = 80;
+        for (let i = 0; i < stmts.length; i += CHUNK) {
+          await db.batch(stmts.slice(i, i + CHUNK));
+        }
+      }
+
       // Compute for each child
+      const factStmts: D1PreparedStatement[] = [];
+      const chargeStmts: D1PreparedStatement[] = [];
+
       for (const child of children) {
         const childPlans = allPlans.filter(p => p.child_id === child.id);
         const childAttend = allAttendance.filter(a => a.child_id === child.id);
@@ -319,7 +349,8 @@ generateRoutes.post('/all', async (c) => {
           const fact = computeUsageFact(child, plan, actual, rules, year, month, day);
           facts.push(fact);
 
-          await db.prepare(`
+          factStmts.push(
+            db.prepare(`
             INSERT INTO usage_facts (
               id, child_id, year, month, day,
               billing_start, billing_end, billing_minutes,
@@ -353,24 +384,27 @@ generateRoutes.post('/all', async (c) => {
               attendance_status = excluded.attendance_status,
               exception_notes = excluded.exception_notes
           `).bind(
-            child.id, year, month, day,
-            fact.billing_start, fact.billing_end, fact.billing_minutes,
-            fact.is_early_morning, fact.is_extension, fact.is_night, fact.is_sick,
-            fact.spot_30min_blocks,
-            fact.has_breakfast, fact.has_lunch, fact.has_am_snack, fact.has_pm_snack, fact.has_dinner,
-            fact.meal_allergy, fact.attendance_status, fact.exception_notes,
-          ).run();
+              child.id, year, month, day,
+              fact.billing_start, fact.billing_end, fact.billing_minutes,
+              fact.is_early_morning, fact.is_extension, fact.is_night, fact.is_sick,
+              fact.spot_30min_blocks,
+              fact.has_breakfast, fact.has_lunch, fact.has_am_snack, fact.has_pm_snack, fact.has_dinner,
+              fact.meal_allergy, fact.attendance_status, fact.exception_notes,
+            ));
         }
 
         // Generate charge_lines
         const chargeLines = generateChargeLines(child, facts, rules, year, month);
-        await db.prepare(
-          `DELETE FROM charge_lines WHERE child_id = ? AND year = ? AND month = ?`
-        ).bind(child.id, year, month).run();
+        chargeStmts.push(
+          db.prepare(
+            `DELETE FROM charge_lines WHERE child_id = ? AND year = ? AND month = ?`
+          ).bind(child.id, year, month)
+        );
 
         for (const cl of chargeLines) {
           if (cl.subtotal === 0 && cl.quantity === 0) continue;
-          await db.prepare(`
+          chargeStmts.push(
+            db.prepare(`
             INSERT INTO charge_lines (
               id, child_id, year, month, charge_type,
               quantity, unit_price, subtotal, notes
@@ -379,11 +413,15 @@ generateRoutes.post('/all', async (c) => {
               ?, ?, ?, ?
             )
           `).bind(
-            child.id, year, month, cl.charge_type,
-            cl.quantity, cl.unit_price, cl.subtotal, cl.notes,
-          ).run();
+              child.id, year, month, cl.charge_type,
+              cl.quantity, cl.unit_price, cl.subtotal, cl.notes,
+            ));
         }
       }
+
+      // Execute all DB operations in batches
+      if (factStmts.length > 0) await batchExec2(factStmts);
+      if (chargeStmts.length > 0) await batchExec2(chargeStmts);
 
       // Step 3: Generate Billing Excel
       const { rows: billingRows, rules: billingRules, warnings: billingWarnings } =

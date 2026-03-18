@@ -325,7 +325,7 @@ export function generateDailyReportExcel(input: DailyReportInput): ArrayBuffer {
           attend?.actual_checkout || null,
           fact.billing_start,
           fact.billing_end,
-          fact.billing_minutes,
+          fact.billing_minutes != null ? fact.billing_minutes : null,
           fact.is_early_morning ? '○' : null,
           fact.is_extension ? '○' : null,
           fact.is_night ? '○' : null,

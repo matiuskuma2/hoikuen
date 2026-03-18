@@ -220,11 +220,12 @@ childRoutes.post('/import', async (c) => {
     // Auto-detect columns
     const colPatterns: Record<string, string[]> = {
       class_name: ['クラス名', 'クラス', 'class', '組'],
-      surname: ['姓', '園児姓', '苗字', '名前(姓)'],
-      firstname: ['名', '園児名', '名前(名)'],
-      fullname: ['氏名', '園児名', 'name', 'フルネーム'],
-      birth_date: ['生年月日', '誕生日', 'birthday', '生月日'],
+      fullname: ['園児氏名', '氏名', 'name', 'フルネーム'],
+      surname: ['園児姓', '姓', '苗字', '名前(姓)'],
+      firstname: ['園児名前', '名前(名)'],
+      birth_date: ['園児生年月日', '生年月日', '誕生日', 'birthday', '生月日'],
       lukumi_id: ['園児ID', 'ルクミーID', 'ID', '児童ID'],
+      kana_fullname: ['園児ふりがな', 'ふりがな', 'よみがな', 'フリガナ'],
       kana_sei: ['姓よみ', 'セイ', '姓読み'],
       kana_mei: ['名よみ', 'メイ', '名読み'],
       enrollment_type: ['利用区分', '区分', '在籍区分', 'enrollment'],
@@ -251,7 +252,7 @@ childRoutes.post('/import', async (c) => {
       for (const [field, patterns] of Object.entries(colPatterns)) {
         if (field in colIdx) continue;
         for (const p of patterns) {
-          if (p.length >= 3 && h.includes(p)) {
+          if (p.length >= 2 && h.includes(p)) {
             colIdx[field] = i;
             break;
           }
@@ -263,6 +264,11 @@ childRoutes.post('/import', async (c) => {
     const results: { name: string; age_class: number | null; enrollment_type: string; action: string }[] = [];
     let created = 0;
     let updated = 0;
+    let skippedDupRows = 0;
+
+    // ── 重複行検出: ルクミーCSV は「姓 名」行と「姓名 フリガナ」行が交互に来る場合がある
+    // 同一園児が2行になるのを防ぐため、名前のセットで重複を検出する
+    const seenNames = new Set<string>();
 
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
@@ -285,6 +291,40 @@ childRoutes.post('/import', async (c) => {
         warnings.push(`行${i + 1}: 名前が空のためスキップ`);
         continue;
       }
+
+      // ── ルクミーCSV重複行スキップ ──
+      // ルクミーCSVは「姓 名」行に続いて「姓名 フリガナ」行がある場合がある
+      // 例: 行1「吉田, 希子, ...」→ 行2「吉田 希子, よしだ きこ, ...」
+      // 後者はフリガナ行なので、前の園児のサブデータとしてスキップする
+      const nameNormForDedup = name.replace(/\s+/g, '');
+
+      // フリガナ行の判定: 名前がひらがな/カタカナを含み、かつ既に漢字名で登録済みの園児のフリガナっぽい場合
+      // 具体的には: 「漢字姓名 ふりがな」形式（スペース区切りで4語以上）を検出
+      const nameParts = name.split(/\s+/);
+      if (nameParts.length >= 4) {
+        // 例: "吉田 希子 よしだ きこ" → 姓名+フリガナ形式
+        const kanjiName = `${nameParts[0]} ${nameParts[1]}`;
+        const kanjiNameNoSpace = `${nameParts[0]}${nameParts[1]}`;
+        if (seenNames.has(kanjiNameNoSpace)) {
+          // この行はフリガナ行 → スキップしてフリガナ情報を前の園児に付与
+          skippedDupRows++;
+          const kanaStr = nameParts.slice(2).join(' ');
+          // フリガナは次のUPSERTで反映するため、nameを漢字名に変換
+          name = kanjiName;
+          // seenNames は更新不要（既に存在する）
+        }
+      }
+      // 名前にルクミーIDがなく、かつ前行と同じ漢字名なら重複行
+      if (seenNames.has(nameNormForDedup)) {
+        // 同一名前の2回目 → フリガナや追加情報の行かもしれないが、重複登録を防ぐ
+        // lukumiIdがあればUPDATE、なければスキップ
+        const lukumiIdCheck = 'lukumi_id' in colIdx ? (cols[colIdx.lukumi_id] || null) : null;
+        if (!lukumiIdCheck) {
+          skippedDupRows++;
+          continue;
+        }
+      }
+      seenNames.add(nameNormForDedup);
 
       // Class name → enrollment_type determination
       const className = 'class_name' in colIdx ? (cols[colIdx.class_name] || '') : '';
@@ -323,12 +363,19 @@ childRoutes.post('/import', async (c) => {
       // Lukumi ID
       const lukumiId = 'lukumi_id' in colIdx ? (cols[colIdx.lukumi_id] || null) : null;
 
-      // Kana
-      const kanaSei = 'kana_sei' in colIdx ? (cols[colIdx.kana_sei] || '') : '';
-      const kanaMei = 'kana_mei' in colIdx ? (cols[colIdx.kana_mei] || '') : '';
-      const nameKana = `${kanaSei} ${kanaMei}`.trim() || null;
+      // Kana — prefer kana_fullname (園児ふりがな), fallback to sei+mei
+      let nameKana: string | null = null;
+      if ('kana_fullname' in colIdx) {
+        nameKana = cols[colIdx.kana_fullname]?.trim() || null;
+      } else {
+        const kanaSei = 'kana_sei' in colIdx ? (cols[colIdx.kana_sei] || '') : '';
+        const kanaMei = 'kana_mei' in colIdx ? (cols[colIdx.kana_mei] || '') : '';
+        nameKana = `${kanaSei} ${kanaMei}`.trim() || null;
+      }
 
       // Check if child already exists (by name or lukumi_id)
+      // Normalize name for comparison: remove extra whitespace
+      const nameNorm = name.replace(/\s+/g, ' ').trim();
       let existing: Record<string, unknown> | null = null;
       if (lukumiId) {
         existing = await db.prepare(
@@ -338,7 +385,21 @@ childRoutes.post('/import', async (c) => {
       if (!existing) {
         existing = await db.prepare(
           `SELECT * FROM children WHERE nursery_id = ? AND name = ?`
-        ).bind(NURSERY_ID, name).first() as Record<string, unknown> | null;
+        ).bind(NURSERY_ID, nameNorm).first() as Record<string, unknown> | null;
+      }
+      if (!existing) {
+        // Fallback: try matching without spaces
+        const nameNoSpace = nameNorm.replace(/ /g, '');
+        const allChildren = await db.prepare(
+          `SELECT * FROM children WHERE nursery_id = ?`
+        ).bind(NURSERY_ID).all();
+        for (const ch of allChildren.results) {
+          const chName = String((ch as Record<string, unknown>).name || '').replace(/\s+/g, '');
+          if (chName === nameNoSpace) {
+            existing = ch as Record<string, unknown>;
+            break;
+          }
+        }
       }
 
       if (existing) {
@@ -379,10 +440,11 @@ childRoutes.post('/import', async (c) => {
       success: true,
       created,
       updated,
+      skipped_duplicates: skippedDupRows,
       total: created + updated,
       results,
       warnings,
-      message: `CSVインポート完了: 新規${created}件, 更新${updated}件`,
+      message: `CSVインポート完了: 新規${created}件, 更新${updated}件` + (skippedDupRows > 0 ? `, 重複スキップ${skippedDupRows}件` : ''),
     });
 
   } catch (e: unknown) {
