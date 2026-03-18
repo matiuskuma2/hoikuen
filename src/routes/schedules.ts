@@ -216,6 +216,9 @@ scheduleRoutes.post('/dashboard', async (c) => {
   if (!year || !month) {
     return c.json({ error: 'year と month を指定してください' }, 400);
   }
+  if (year < 2000 || year > 2100 || month < 1 || month > 12) {
+    return c.json({ error: `年月が範囲外です: ${year}年${month}月` }, 400);
+  }
 
   try {
   const db = c.env.DB;
@@ -444,7 +447,7 @@ scheduleRoutes.get('/view/:token/:year/:month', async (c) => {
 
   // Get schedule plans
   const result = await db.prepare(`
-    SELECT day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file
+    SELECT day, planned_start, planned_end, breakfast_flag, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, source_file
     FROM schedule_plans
     WHERE child_id = ? AND year = ? AND month = ?
     ORDER BY day ASC
@@ -470,6 +473,7 @@ scheduleRoutes.get('/view/:token/:year/:month', async (c) => {
       is_weekend: dow === 0 || dow === 6,
       planned_start: plan?.planned_start ?? null,
       planned_end: plan?.planned_end ?? null,
+      breakfast_flag: plan?.breakfast_flag ?? 0,
       lunch_flag: plan?.lunch_flag ?? 0,
       am_snack_flag: plan?.am_snack_flag ?? 0,
       pm_snack_flag: plan?.pm_snack_flag ?? 0,
