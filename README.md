@@ -1,6 +1,6 @@
 # あゆっこ保育所 業務自動化システム
 
-> **Version**: 10.1 — 食事フラグ自動判定統一・保護者画面シンプル化 (2026-03-21)
+> **Version**: 10.2 — LINE「休み」DB削除対応・入力経路統合完了 (2026-03-21)
 > **GitHub**: https://github.com/matiuskuma2/hoikuen
 
 ---
@@ -285,6 +285,13 @@ LINEリッチメニューから共通LIFF URLへ遷移し、LIFF内でLINE userI
 ## 現在のステータス
 
 ### ✅ 完了
+- **v10.2 — LINE「休み」DB削除対応・入力経路統合完了** (2026-03-21)
+  - 🟢 LINE「3日 休み」送信 → ドラフトに `OFF_MARKER` エントリ追加 → 確定時に既存DB行を `DELETE`
+  - 🟢 `saveScheduleEntries()` が通常エントリ（UPSERT）と休みエントリ（DELETE）を分離処理
+  - 🟢 `formatDraftForConfirmation()` で休みエントリを「🗑️ 休み」と表示
+  - 🟢 確定メッセージに登録日数・削除日数を両方表示（`saved=N, deleted=N`）
+  - 🟢 LIFF→LINE→LIFF の上書きフロー検証済み（Last Write Wins で正常動作）
+  - 🟢 全入力経路（LINE / LIFF / スタッフ管理画面）が `schedule_plans` テーブルに統合
 - **v10.1 — 食事フラグ自動判定統一・保護者画面シンプル化** (2026-03-21)
   - 🟢 `src/lib/meal-rules.ts` — 食事フラグ自動判定の SSOT 共通モジュール新規作成
   - 🟢 保護者画面 (`/my/:token`) から食事チェックボックスを全削除（日付・登園・降園のみ）
@@ -373,6 +380,7 @@ LINEリッチメニューから共通LIFF URLへ遷移し、LIFF内でLINE userI
 
 | 日付 | 内容 |
 |------|------|
+| 2026-03-21 | **v10.2**: LINE「休み」DB削除対応 — OFF_MARKERパターン導入、saveScheduleEntriesでDELETE処理、確認メッセージ休み表示、入力経路統合検証完了 |
 | 2026-03-21 | **v10.1**: 食事フラグ自動判定統一 — `meal-rules.ts` SSOT化、保護者画面の食事チェックUI削除、submit APIサーバー側自動計算、LINE会話フロー共通化 |
 | 2026-03-17 | **v10.0**: Excel帳票生成エンジン Full TypeScript移行（Python依存排除）、朝食サポート追加、billing/daily Excel生成（SheetJS）、一括生成パイプライン、ファイルDB取込、園児CSVインポート、フロントエンドUI統合 |
 | 2026-03-14 | **v9.5**: URL保護（view_token 32文字）、ユニットテスト85件追加（Vitest）、nursery_id一元化（DEFAULT_NURSERY_ID）、新Cloudflareアカウントにデプロイ完了（本番+ステージング）、migration 0004適用済み |

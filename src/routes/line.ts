@@ -32,6 +32,7 @@ import {
   getDraftEntries,
   mergeDraftEntries,
   formatDraftForConfirmation,
+  OFF_MARKER,
   type ConversationState,
   type DraftEntry,
 } from '../lib/conversation';
@@ -554,28 +555,36 @@ async function stateCollecting(
   const { entries, removeDays, errors } = parseScheduleInput(text, year, month);
 
   // 休み指定（removeDays）の処理
+  // → ドラフトから除外するだけでなく、OFF_MARKER エントリとしてドラフトに追加
+  //   確定時に saveScheduleEntries が既存DB行を DELETE する
   if (removeDays.length > 0) {
     const existingDrafts = getDraftEntries(convData);
-    const filtered = existingDrafts.filter(e => !removeDays.includes(e.day));
-    const removedCount = existingDrafts.length - filtered.length;
-
-    // 新しいエントリもマージ
-    const merged = entries.length > 0 ? mergeDraftEntries(filtered, entries) : filtered;
+    // 休み日を OFF_MARKER エントリに変換してドラフトに追加
+    const offEntries: DraftEntry[] = removeDays.map(day => ({
+      day,
+      start: OFF_MARKER,
+      end: OFF_MARKER,
+    }));
+    // 新しいエントリ + 休みエントリをマージ（同じ日は上書き）
+    const allNew = [...entries, ...offEntries];
+    const merged = mergeDraftEntries(existingDrafts, allNew);
     await updateConversation(db, userId, {
       draft_entries: JSON.stringify(merged),
     });
 
-    let reply = '';
-    if (removedCount > 0) {
-      reply += `🗑️ ${removeDays.map(d => `${d}日`).join('・')}を休みにしました。`;
-    }
+    const activeCount = merged.filter(e => e.start !== OFF_MARKER).length;
+    const offCount = merged.filter(e => e.start === OFF_MARKER).length;
+
+    let reply = `🗑️ ${removeDays.map(d => `${d}日`).join('・')}を休みにしました。`;
     if (entries.length > 0) {
       reply += `\n✅ ${entries.length}日分を追加しました。`;
     }
     if (errors.length > 0) {
       reply += `\n\n⚠️ 一部エラー:\n${errors.join('\n')}`;
     }
-    reply += `\n\n現在 ${merged.length}日分入力済み。\n続けて入力するか、「確認」で確定へ進みます。`;
+    reply += `\n\n現在 ${activeCount}日分入力済み`;
+    if (offCount > 0) reply += `（+${offCount}日休み）`;
+    reply += `。\n続けて入力するか、「確認」で確定へ進みます。`;
 
     await replyMessage(replyToken, [{ type: 'text', text: reply }], token);
     return;
@@ -631,19 +640,25 @@ async function stateConfirm(
   const drafts = getDraftEntries(convData);
 
   if (/^(確定|保存|save|yes|はい)$/i.test(text)) {
-    // schedule_plans に UPSERT
-    const count = await saveScheduleEntries(db, childId, year, month, drafts);
+    // schedule_plans に UPSERT（休みはDELETE）
+    const result = await saveScheduleEntries(db, childId, year, month, drafts);
 
     await updateConversation(db, userId, {
       state: 'SAVED',
       draft_entries: '[]',
     });
 
-    await logConversation(db, userId, 'outgoing', 'schedule_saved', `${count} entries`, 'CONFIRM', 'SAVED');
+    const totalActions = result.saved + result.deleted;
+    let msg = `✅ ${year}年${month}月の予定を保存しました！`;
+    if (result.saved > 0) msg += `\n📅 ${result.saved}日分 登録`;
+    if (result.deleted > 0) msg += `\n🗑️ ${result.deleted}日分 休み（削除）`;
+    msg += `\n\n・「予定入力」→ 追加の予定を入力\n・「ヘルプ」→ 使い方`;
+
+    await logConversation(db, userId, 'outgoing', 'schedule_saved', `${totalActions} entries (saved=${result.saved}, deleted=${result.deleted})`, 'CONFIRM', 'SAVED');
 
     await replyMessage(replyToken, [{
       type: 'text',
-      text: `✅ ${year}年${month}月の予定（${count}日分）を保存しました！\n\n・「予定入力」→ 追加の予定を入力\n・「ヘルプ」→ 使い方`,
+      text: msg,
     }], token);
     return;
   }

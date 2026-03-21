@@ -28,8 +28,16 @@ export type ConversationState =
 
 export interface DraftEntry {
   day: number;
-  start: string;   // HH:MM
-  end: string;      // HH:MM
+  start: string;   // HH:MM or '__OFF__' for rest days
+  end: string;      // HH:MM or '__OFF__' for rest days
+}
+
+/** 休み日マーカー: ドラフトに { day, start: OFF_MARKER, end: OFF_MARKER } を入れる */
+export const OFF_MARKER = '__OFF__';
+
+/** ドラフトエントリが休み指定かどうか判定 */
+export function isOffDay(entry: DraftEntry): boolean {
+  return entry.start === OFF_MARKER || entry.end === OFF_MARKER;
 }
 
 export interface ConversationRow {
@@ -699,7 +707,8 @@ function validateEntry(
 
 /**
  * 確定された予定を schedule_plans に UPSERT
- * 食事フラグは登降園時間から自動判定
+ * - 通常エントリ: UPSERT（食事フラグは時間から自動判定）
+ * - 休みエントリ (OFF_MARKER): 既存DB行を DELETE
  */
 export async function saveScheduleEntries(
   db: D1Database,
@@ -707,10 +716,23 @@ export async function saveScheduleEntries(
   year: number,
   month: number,
   entries: DraftEntry[],
-): Promise<number> {
+): Promise<{ saved: number; deleted: number }> {
   let savedCount = 0;
+  let deletedCount = 0;
 
   for (const entry of entries) {
+    // 休み指定: 既存DB行を削除
+    if (isOffDay(entry)) {
+      await db
+        .prepare(
+          `DELETE FROM schedule_plans WHERE child_id = ? AND year = ? AND month = ? AND day = ?`,
+        )
+        .bind(childId, year, month, entry.day)
+        .run();
+      deletedCount++;
+      continue;
+    }
+
     const meals = calculateMealFlags(entry.start, entry.end);
     
     await db
@@ -745,7 +767,7 @@ export async function saveScheduleEntries(
     savedCount++;
   }
 
-  return savedCount;
+  return { saved: savedCount, deleted: deletedCount };
 }
 
 // ============================================================
@@ -809,7 +831,7 @@ export function mergeDraftEntries(
 }
 
 /**
- * ドラフトを確認メッセージに整形（食事フラグ付き）
+ * ドラフトを確認メッセージに整形（食事フラグ付き・休み表示対応）
  */
 export function formatDraftForConfirmation(
   entries: DraftEntry[],
@@ -818,8 +840,14 @@ export function formatDraftForConfirmation(
 ): string {
   if (entries.length === 0) return '入力された予定はありません。';
 
+  const activeEntries = entries.filter(e => !isOffDay(e));
+  const offEntries = entries.filter(e => isOffDay(e));
+
   const lines = entries.map((e) => {
     const dow = getDayOfWeek(year, month, e.day);
+    if (isOffDay(e)) {
+      return `  ${month}/${e.day}(${dow}) 🗑️ 休み`;
+    }
     const meals = calculateMealFlags(e.start, e.end);
     const mealIcons: string[] = [];
     if (meals.breakfast_flag) mealIcons.push('朝食');
@@ -831,7 +859,11 @@ export function formatDraftForConfirmation(
     return `  ${month}/${e.day}(${dow}) ${e.start}〜${e.end}${mealStr}`;
   });
 
-  return `📅 ${year}年${month}月の利用予定:\n\n${lines.join('\n')}\n\n合計: ${entries.length}日`;
+  let summary = `📅 ${year}年${month}月の利用予定:\n\n${lines.join('\n')}\n\n`;
+  summary += `登園: ${activeEntries.length}日`;
+  if (offEntries.length > 0) summary += ` / 休み: ${offEntries.length}日`;
+
+  return summary;
 }
 
 function getDayOfWeek(year: number, month: number, day: number): string {
