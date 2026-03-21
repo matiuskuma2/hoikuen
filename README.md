@@ -1,6 +1,6 @@
 # あゆっこ保育所 業務自動化システム
 
-> **Version**: 10.0 — Excel帳票生成エンジン（TypeScript全移行）・朝食対応・園児CSV一括インポート (2026-03-17)
+> **Version**: 10.1 — 食事フラグ自動判定統一・保護者画面シンプル化 (2026-03-21)
 > **GitHub**: https://github.com/matiuskuma2/hoikuen
 
 ---
@@ -24,9 +24,10 @@
 LINE経由で保護者から利用予定を収集するシステム。
 
 **コア体験**:
-1. 保護者がLINEで来月の利用予定を提出（日付・登園・降園の3項目のみ）
-2. 管理画面で月間ダッシュボード表示
-3. ワンクリックで提出物ZIP一括生成（日報・明細・PDF）
+1. 保護者がLINE or LIFF/Webで来月の利用予定を提出（**日付・登園・降園の3項目のみ**）
+2. **食事は時間から自動判定**（保護者に入力させない）
+3. 管理画面で月間ダッシュボード表示
+4. ワンクリックで提出物ZIP一括生成（日報・明細・PDF）
 
 ---
 
@@ -53,6 +54,36 @@ LINE経由で保護者から利用予定を収集するシステム。
 | R2 | `ayukko-files-stg` | `ayukko-files-prod` |
 | Account | `1eb9b7b82253bdac108f0c482dd1c368` | 同左 |
 | LINE Secrets | ⚠️ 要設定 | ⚠️ 要設定（新アカウント） |
+
+---
+
+## 食事フラグ自動判定 (SSOT: `src/lib/meal-rules.ts`)
+
+保護者は **日付・登園時間・降園時間** の3項目のみ入力。  
+食事フラグは全入力経路（LINE・LIFF/Web）でサーバー側の共通ロジックが自動計算する。
+
+### 確定ルール（木村さん確認済み 2026-03-10）
+
+| 条件 | フラグ |
+|------|--------|
+| 12時前に登園 | 朝食 ✅ + 昼食 ✅ |
+| 15時以降に降園 | 午後おやつ ✅ |
+| 19時以降に登園（夜間保育） | 朝食 ✅ |
+
+### 未確定（木村さん確認待ち → 現在0固定）
+
+| 項目 | 現状 |
+|------|------|
+| 午前おやつ (`am_snack_flag`) | 0固定 |
+| 夕食 (`dinner_flag`) | 0固定 |
+
+### 入力経路ごとの処理
+
+| 入力経路 | API | 食事フラグ |
+|---------|-----|----------|
+| **保護者 LIFF/Web** (`/my/:token`) | `POST /api/schedules/submit/:token` | サーバー側 `calculateMealFlags()` で自動計算 |
+| **LINE メッセージ** | `conversation.ts` → UPSERT | 共通 `calculateMealFlags()` で自動計算 |
+| **管理画面（スタッフ）** | `POST /api/schedules` | スタッフが明示的に設定（食事管理は園の役割） |
 
 ---
 
@@ -254,6 +285,13 @@ LINEリッチメニューから共通LIFF URLへ遷移し、LIFF内でLINE userI
 ## 現在のステータス
 
 ### ✅ 完了
+- **v10.1 — 食事フラグ自動判定統一・保護者画面シンプル化** (2026-03-21)
+  - 🟢 `src/lib/meal-rules.ts` — 食事フラグ自動判定の SSOT 共通モジュール新規作成
+  - 🟢 保護者画面 (`/my/:token`) から食事チェックボックスを全削除（日付・登園・降園のみ）
+  - 🟢 `POST /api/schedules/submit/:token` でサーバー側自動計算（フロント送信値を無視）
+  - 🟢 LINE `conversation.ts` の食事計算を共通モジュールに統一
+  - 🟢 フロント表示用に `autoCalcMeals()` で表示のみ自動計算（最終確定はサーバー側）
+  - 🟢 管理画面（スタッフ用）の食事チェックは園側管理のため維持
 - **v10.0 — Excel帳票生成エンジン (Full TypeScript)** (2026-03-17)
   - 🟢 **Phase A-0**: 朝食(breakfast)対応 — charge_lines CHECK制約更新、PricingRules/meal_prices拡張
   - 🟢 **Phase A-1**: 請求明細Excel生成 (billing-generator.ts) — 請求一覧・請求明細・単価表の3シート
@@ -335,6 +373,7 @@ LINEリッチメニューから共通LIFF URLへ遷移し、LIFF内でLINE userI
 
 | 日付 | 内容 |
 |------|------|
+| 2026-03-21 | **v10.1**: 食事フラグ自動判定統一 — `meal-rules.ts` SSOT化、保護者画面の食事チェックUI削除、submit APIサーバー側自動計算、LINE会話フロー共通化 |
 | 2026-03-17 | **v10.0**: Excel帳票生成エンジン Full TypeScript移行（Python依存排除）、朝食サポート追加、billing/daily Excel生成（SheetJS）、一括生成パイプライン、ファイルDB取込、園児CSVインポート、フロントエンドUI統合 |
 | 2026-03-14 | **v9.5**: URL保護（view_token 32文字）、ユニットテスト85件追加（Vitest）、nursery_id一元化（DEFAULT_NURSERY_ID）、新Cloudflareアカウントにデプロイ完了（本番+ステージング）、migration 0004適用済み |
 | 2026-03-14 | **v9.4**: 型定義統合（Parsed* prefixで excel-parser 独自型を types/index.ts に集約）、延長保育閾値統一（18:00）、schedules.ts のハードコード閾値を TIME_BOUNDARIES に置換 |
