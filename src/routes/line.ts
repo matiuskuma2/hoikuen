@@ -773,18 +773,71 @@ lineRoutes.get('/link-codes', async (c) => {
        ORDER BY lc.created_at DESC`,
     )
     .all();
-  return c.json({ codes: results.results });
+
+  // 各コードに紐づく対象園児を取得
+  const codes = [];
+  for (const row of results.results as any[]) {
+    const childRows = await db
+      .prepare(
+        `SELECT c.id, c.name FROM link_code_children lcc
+         JOIN children c ON c.id = lcc.child_id
+         WHERE lcc.link_code_id = ?
+         ORDER BY c.name`
+      )
+      .bind(row.id)
+      .all<{ id: string; name: string }>();
+
+    codes.push({
+      ...row,
+      target_children: childRows.results || [],
+    });
+  }
+
+  return c.json({ codes });
 });
 
 /**
- * POST /link-codes — 連携コード新規発行
- * Body: { child_ids?: string[] }  (将来的に特定園児に紐づけ)
+ * POST /link-codes — 連携コード新規発行（園児指定対応）
+ * Body: { child_ids: string[] }  — 対象園児IDの配列（必須）
+ * 
+ * セキュリティ修正 (2026-03-21):
+ *   link_code_children テーブルに対象園児を記録。
+ *   child_ids が空の場合はエラー（全園児紐付け防止）。
  */
 lineRoutes.post('/link-codes', async (c) => {
   const db = c.env.DB;
-  // ランダム4桁コード生成
-  const num = Math.floor(1000 + Math.random() * 9000);
-  const code = `AYK-${num}`;
+
+  let body: { child_ids?: string[] } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    // bodyなしの場合も許容（後方互換）
+  }
+
+  const childIds = body.child_ids;
+  if (!childIds || !Array.isArray(childIds) || childIds.length === 0) {
+    return c.json({ error: '対象園児（child_ids）を1人以上指定してください' }, 400);
+  }
+
+  // 園児の存在確認
+  for (const cid of childIds) {
+    const exists = await db.prepare('SELECT id FROM children WHERE id = ?').bind(cid).first();
+    if (!exists) {
+      return c.json({ error: `園児が見つかりません: ${cid}` }, 400);
+    }
+  }
+
+  // コード重複チェック付きで生成
+  let code: string;
+  let attempts = 0;
+  do {
+    const num = Math.floor(1000 + Math.random() * 9000);
+    code = `AYK-${num}`;
+    const dup = await db.prepare('SELECT id FROM link_codes WHERE code = ?').bind(code).first();
+    if (!dup) break;
+    attempts++;
+  } while (attempts < 10);
+
   const id = `lc_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
   // 有効期限: 90日
   const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
@@ -797,7 +850,32 @@ lineRoutes.post('/link-codes', async (c) => {
     .bind(id, code, DEFAULT_NURSERY_ID, expiresAt)
     .run();
 
-  return c.json({ id, code, expires_at: expiresAt });
+  // link_code_children に対象園児を登録
+  const linkedChildren: { child_id: string; name: string }[] = [];
+  for (const cid of childIds) {
+    const child = await db.prepare('SELECT id, name FROM children WHERE id = ?').bind(cid).first<{ id: string; name: string }>();
+    if (child) {
+      await db
+        .prepare(
+          `INSERT OR IGNORE INTO link_code_children (id, link_code_id, child_id, created_at)
+           VALUES (?, ?, ?, datetime('now'))`
+        )
+        .bind(
+          crypto.randomUUID().replace(/-/g, '').slice(0, 16),
+          id,
+          cid,
+        )
+        .run();
+      linkedChildren.push({ child_id: child.id, name: child.name });
+    }
+  }
+
+  return c.json({
+    id,
+    code,
+    expires_at: expiresAt,
+    children: linkedChildren,
+  });
 });
 
 /**
@@ -809,10 +887,29 @@ lineRoutes.get('/submission-status', async (c) => {
   const year = parseInt(c.req.query('year') ?? String(new Date().getFullYear()));
   const month = parseInt(c.req.query('month') ?? String(new Date().getMonth() + 2));
 
-  // 全園児を取得
+  // 全園児を取得（view_token 含む）
   const children = await db
-    .prepare('SELECT id, name, enrollment_type FROM children WHERE withdrawn_at IS NULL ORDER BY name')
-    .all<{ id: string; name: string; enrollment_type: string }>();
+    .prepare('SELECT id, name, enrollment_type, view_token FROM children WHERE withdrawn_at IS NULL ORDER BY name')
+    .all<{ id: string; name: string; enrollment_type: string; view_token: string | null }>();
+
+  // 園児ごとの有効な連携コード取得（未使用 & 有効期限内）
+  const activeCodes = await db
+    .prepare(
+      `SELECT lcc.child_id, lc.code
+       FROM link_code_children lcc
+       JOIN link_codes lc ON lc.id = lcc.link_code_id
+       WHERE lc.used_by_line_account_id IS NULL
+       AND (lc.expires_at IS NULL OR lc.expires_at > datetime('now'))
+       ORDER BY lc.created_at DESC`,
+    )
+    .all<{ child_id: string; code: string }>();
+
+  const codeMap = new Map<string, string>();
+  for (const r of activeCodes.results) {
+    if (!codeMap.has(r.child_id)) {
+      codeMap.set(r.child_id, r.code);
+    }
+  }
 
   // LINE連携状況（line_account_children 経由）
   const lineLinks = await db
@@ -876,6 +973,8 @@ lineRoutes.get('/submission-status', async (c) => {
       child_id: child.id,
       child_name: child.name,
       enrollment_type: child.enrollment_type,
+      view_token: child.view_token ?? null,
+      active_code: codeMap.get(child.id) ?? null,
       line_linked: !!link?.line_user_id,
       line_display_name: link?.display_name ?? null,
       conv_state: link?.conv_state ?? null,

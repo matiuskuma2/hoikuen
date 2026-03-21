@@ -14,6 +14,7 @@ import childRoutes from './routes/children';
 import templateRoutes from './routes/templates';
 import scheduleRoutes from './routes/schedules';
 import lineRoutes from './routes/line';
+import liffRoutes from './routes/liff';
 import uploadRoutes from './routes/upload';
 import generateRoutes from './routes/generate';
 
@@ -29,7 +30,9 @@ app.use('/api/*', cors({
         origin.includes('localhost') ||
         origin.includes('127.0.0.1') ||
         origin.includes('.sandbox.novita.ai') ||
-        origin.includes('.genspark.ai')) {
+        origin.includes('.genspark.ai') ||
+        origin.includes('.line.me') ||
+        origin.includes('.line-scdn.net')) {
       return origin;
     }
     // Reject unknown origins
@@ -89,8 +92,19 @@ app.route('/api/children', childRoutes);
 app.route('/api/templates', templateRoutes);
 app.route('/api/schedules', scheduleRoutes);
 app.route('/api/line', lineRoutes);
+app.route('/api/liff', liffRoutes);
 app.route('/api/upload', uploadRoutes);
 app.route('/api/generate', generateRoutes);
+
+// ═══════════════════════════════════════════
+// LIFF Entry Point — LINE内ブラウザで開くページ
+// リッチメニュー「予定入力」→ この URL がLIFFアプリのEndpoint
+// ═══════════════════════════════════════════
+app.get('/line/entry', (c) => {
+  // LIFF_ID は環境変数から取得。未設定時は仮値（LINE Console設定後に差替）
+  const liffId = (c.env as any).LIFF_ID || 'PENDING_LIFF_ID';
+  return c.html(liffEntryPage(liffId));
+});
 
 // ═══════════════════════════════════════════
 // Staff pages: 日次情報 & 園児登園確認表（印刷対応）
@@ -674,29 +688,57 @@ function mainPage(): string {
             <i class="fas fa-key text-amber-500"></i>
             連携コード管理
           </h3>
-          <button onclick="generateLinkCode()" class="bg-amber-500 text-white px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-amber-600">
+          <button onclick="openLinkCodeModal()" class="bg-amber-500 text-white px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-amber-600">
             <i class="fas fa-plus mr-1"></i>新しいコードを発行
           </button>
         </div>
         <div class="p-4">
           <p class="text-xs text-gray-500 mb-3">
             <i class="fas fa-info-circle text-blue-400 mr-1"></i>
-            発行したコードを保護者にお渡しください。保護者がLINEでコードを入力すると、園児と自動的に紐づけされます。
+            コード発行時に対象園児を選択してください。保護者がLINE内でコードを入力すると、選択した園児のみ紐づきます。
           </p>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
                 <tr class="bg-gray-50 text-gray-600">
                   <th class="px-3 py-2 text-left font-medium">コード</th>
+                  <th class="px-3 py-2 text-left font-medium">対象園児</th>
                   <th class="px-3 py-2 text-center font-medium">使用状況</th>
                   <th class="px-3 py-2 text-center font-medium">使用者</th>
                   <th class="px-3 py-2 text-center font-medium">有効期限</th>
                 </tr>
               </thead>
               <tbody id="link-codes-table-body">
-                <tr><td colspan="4" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>
+                <tr><td colspan="5" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 連携コード発行モーダル -->
+      <div id="link-code-modal" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center" onclick="if(event.target===this)closeLinkCodeModal()">
+        <div class="bg-white rounded-2xl w-full max-w-md mx-4 shadow-2xl" onclick="event.stopPropagation()">
+          <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-sm font-bold text-gray-800"><i class="fas fa-key text-amber-500 mr-2"></i>連携コード発行</h3>
+            <button onclick="closeLinkCodeModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+          </div>
+          <div class="p-5">
+            <p class="text-xs text-gray-600 mb-3">対象園児を選択してください（複数選択可 = 兄弟対応）</p>
+            <div class="mb-3 flex gap-2">
+              <input type="text" id="child-search-input" placeholder="園児名で検索..." class="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-xs" oninput="filterChildCheckboxes()">
+              <button onclick="toggleAllChildren(true)" class="text-[10px] text-blue-600 hover:underline">全選択</button>
+              <button onclick="toggleAllChildren(false)" class="text-[10px] text-gray-500 hover:underline">全解除</button>
+            </div>
+            <div id="child-checkboxes" class="max-h-60 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+              <div class="p-4 text-center text-gray-400 text-xs">読み込み中...</div>
+            </div>
+            <div class="mt-4 flex gap-2">
+              <button onclick="closeLinkCodeModal()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-xl text-sm font-medium">キャンセル</button>
+              <button onclick="generateLinkCode()" id="gen-code-btn" class="flex-1 bg-amber-500 text-white py-2.5 rounded-xl text-sm font-medium hover:bg-amber-600">
+                <i class="fas fa-key mr-1"></i>コード発行
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1330,6 +1372,332 @@ function mainPage(): string {
 app.get('/', (c) => {
   return c.html(mainPage());
 });
+
+// ═══════════════════════════════════════════
+// LIFF Entry Page — LINE内ブラウザ起動ページ
+// ═══════════════════════════════════════════
+function liffEntryPage(liffId: string): string {
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>あゆっこ 予定入力</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    .fade-in { animation: fadeIn 0.4s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .pulse { animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  </style>
+</head>
+<body class="bg-gradient-to-b from-green-50 to-white min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-lg mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl flex items-center justify-center text-white text-sm" style="background:#06C755">
+        <i class="fab fa-line"></i>
+      </div>
+      <div>
+        <h1 class="text-sm font-bold text-gray-800">あゆっこ 利用予定入力</h1>
+        <p class="text-[10px] text-gray-500">滋賀医科大学学内保育所</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-lg mx-auto w-full px-4 py-6">
+    <!-- Loading state -->
+    <div id="state-loading" class="text-center py-16">
+      <div class="w-16 h-16 mx-auto mb-4 rounded-full flex items-center justify-center" style="background:#06C755">
+        <i class="fab fa-line text-white text-2xl pulse"></i>
+      </div>
+      <p class="text-sm text-gray-600 font-medium">LINE連携を確認中...</p>
+      <p class="text-xs text-gray-400 mt-1">少々お待ちください</p>
+    </div>
+
+    <!-- Not in LINE browser -->
+    <div id="state-not-line" class="hidden fade-in">
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 text-center">
+        <div class="w-14 h-14 mx-auto mb-4 rounded-full bg-yellow-100 flex items-center justify-center">
+          <i class="fas fa-mobile-alt text-yellow-600 text-xl"></i>
+        </div>
+        <h2 class="text-base font-bold text-gray-800 mb-2">LINEアプリから開いてください</h2>
+        <p class="text-sm text-gray-600 mb-4">
+          この画面はLINEのリッチメニューから開く必要があります。
+        </p>
+        <div class="bg-gray-50 rounded-xl p-4 border border-gray-200">
+          <p class="text-xs text-gray-500 mb-2">あゆっこLINE公式アカウント</p>
+          <img src="https://qr-official.line.me/gs/M_591xcqds_GW.png" alt="QRコード" class="w-32 h-32 mx-auto rounded-lg border border-gray-200">
+          <a href="https://lin.ee/H02sZM5" class="block mt-3 text-sm font-medium" style="color:#06C755">
+            <i class="fab fa-line mr-1"></i>友だち追加はこちら
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Link form (not linked yet) -->
+    <div id="state-link" class="hidden fade-in">
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+        <div class="text-center mb-5">
+          <div class="w-14 h-14 mx-auto mb-3 rounded-full bg-blue-100 flex items-center justify-center">
+            <i class="fas fa-link text-blue-600 text-xl"></i>
+          </div>
+          <h2 class="text-base font-bold text-gray-800 mb-1">初回連携</h2>
+          <p class="text-sm text-gray-600">
+            園から受け取った連携コードを入力してください
+          </p>
+        </div>
+
+        <div class="mb-4">
+          <label class="text-xs text-gray-600 font-medium mb-1 block">連携コード</label>
+          <input type="text" id="link-code-input" placeholder="AYK-1234"
+                 class="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-center text-lg font-mono font-bold tracking-widest
+                        focus:border-blue-500 focus:outline-none uppercase"
+                 maxlength="8" autocomplete="off" inputmode="text">
+          <p id="link-error" class="hidden text-xs text-red-500 mt-2 text-center"></p>
+        </div>
+
+        <button onclick="submitLinkCode()" id="link-btn"
+                class="w-full py-3 rounded-xl text-white font-medium text-sm"
+                style="background:#06C755">
+          <i class="fas fa-check mr-1"></i>連携する
+        </button>
+
+        <p class="text-[10px] text-gray-400 text-center mt-3">
+          連携コードがわからない場合は園の職員にお問い合わせください
+        </p>
+      </div>
+    </div>
+
+    <!-- Child selector (multiple children) -->
+    <div id="state-select" class="hidden fade-in">
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+        <div class="text-center mb-5">
+          <div class="w-14 h-14 mx-auto mb-3 rounded-full bg-green-100 flex items-center justify-center">
+            <i class="fas fa-child text-green-600 text-xl"></i>
+          </div>
+          <h2 class="text-base font-bold text-gray-800 mb-1">お子様を選択</h2>
+          <p class="text-sm text-gray-600" id="select-greeting"></p>
+        </div>
+        <div id="child-list" class="space-y-2"></div>
+      </div>
+    </div>
+
+    <!-- Error state -->
+    <div id="state-error" class="hidden fade-in">
+      <div class="bg-white rounded-2xl shadow-sm border border-red-200 p-6 text-center">
+        <div class="w-14 h-14 mx-auto mb-4 rounded-full bg-red-100 flex items-center justify-center">
+          <i class="fas fa-exclamation-triangle text-red-500 text-xl"></i>
+        </div>
+        <h2 class="text-base font-bold text-gray-800 mb-2">エラーが発生しました</h2>
+        <p id="error-detail" class="text-sm text-gray-600 mb-4"></p>
+        <button onclick="location.reload()" class="bg-gray-200 text-gray-700 px-6 py-2 rounded-xl text-sm font-medium">
+          <i class="fas fa-redo mr-1"></i>やり直す
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="max-w-lg mx-auto w-full px-4 pb-6">
+    <p class="text-center text-[10px] text-gray-400">
+      滋賀医科大学学内保育所 あゆっこ
+    </p>
+  </footer>
+
+  <script>
+    const LIFF_ID = '${liffId}';
+    let lineUserId = null;
+    let displayName = null;
+
+    // ── State management ──
+    function showState(stateId) {
+      ['state-loading', 'state-not-line', 'state-link', 'state-select', 'state-error'].forEach(id => {
+        document.getElementById(id).classList.add('hidden');
+      });
+      document.getElementById(stateId).classList.remove('hidden');
+    }
+
+    function showError(msg) {
+      document.getElementById('error-detail').textContent = msg;
+      showState('state-error');
+    }
+
+    // ── LIFF initialization ──
+    async function initLiff() {
+      try {
+        await liff.init({ liffId: LIFF_ID });
+
+        // LINE内ブラウザチェック
+        if (!liff.isInClient()) {
+          // LINE外ブラウザで開いた場合
+          // ログインさせて続行するか、案内を出すか
+          if (!liff.isLoggedIn()) {
+            // 未ログイン → LINE側のログイン画面へ
+            // LINE外の場合はQRコード案内を表示
+            showState('state-not-line');
+            return;
+          }
+        }
+
+        // ログイン済みでない場合はログイン
+        if (!liff.isLoggedIn()) {
+          liff.login();
+          return;
+        }
+
+        // プロフィール取得
+        const profile = await liff.getProfile();
+        lineUserId = profile.userId;
+        displayName = profile.displayName;
+
+        // サーバーに連携状態を確認
+        await checkLinkStatus();
+      } catch (e) {
+        console.error('LIFF init error:', e);
+        if (LIFF_ID === 'PENDING_LIFF_ID') {
+          showError('LIFF IDが未設定です。LINE Developer Consoleで設定が必要です。管理者にお問い合わせください。');
+        } else {
+          showError('LINEの初期化に失敗しました: ' + (e.message || e));
+        }
+      }
+    }
+
+    // ── Check link status ──
+    async function checkLinkStatus() {
+      try {
+        const res = await fetch('/api/liff/me?line_user_id=' + encodeURIComponent(lineUserId));
+        if (!res.ok) {
+          throw new Error('サーバーエラー: ' + res.status);
+        }
+        const data = await res.json();
+
+        if (data.linked && data.children && data.children.length > 0) {
+          if (data.children.length === 1) {
+            // 1名 → 即リダイレクト
+            const child = data.children[0];
+            window.location.href = '/my/' + child.view_token;
+          } else {
+            // 複数 → 選択画面
+            showChildSelector(data.children);
+          }
+        } else {
+          // 未連携 → 連携コード入力
+          showState('state-link');
+          // フォーカス
+          setTimeout(() => document.getElementById('link-code-input')?.focus(), 300);
+        }
+      } catch (e) {
+        console.error('Check link error:', e);
+        showError('連携状態の確認に失敗しました: ' + (e.message || e));
+      }
+    }
+
+    // ── Child selector ──
+    function showChildSelector(children) {
+      const list = document.getElementById('child-list');
+      const greeting = document.getElementById('select-greeting');
+      greeting.textContent = (displayName || '') + 'さん、予定を入力するお子様を選んでください';
+
+      list.innerHTML = children.map(ch => {
+        const badge = ch.enrollment_type === '月極'
+          ? '<span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">' + ch.enrollment_type + '</span>'
+          : '<span class="text-[10px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">' + ch.enrollment_type + '</span>';
+        return '<button onclick="selectChild(\\'' + ch.view_token + '\\')" ' +
+          'class="w-full flex items-center gap-3 p-4 bg-gray-50 rounded-xl border border-gray-200 hover:border-green-400 hover:bg-green-50 transition-all">' +
+          '<div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center text-green-600"><i class="fas fa-child"></i></div>' +
+          '<div class="text-left flex-1"><div class="text-sm font-bold text-gray-800">' + ch.name + '</div>' + badge + '</div>' +
+          '<i class="fas fa-chevron-right text-gray-400"></i></button>';
+      }).join('');
+
+      showState('state-select');
+    }
+
+    function selectChild(viewToken) {
+      window.location.href = '/my/' + viewToken;
+    }
+
+    // ── Link code submission ──
+    async function submitLinkCode() {
+      const input = document.getElementById('link-code-input');
+      const errorEl = document.getElementById('link-error');
+      const btn = document.getElementById('link-btn');
+      let code = input.value.trim().toUpperCase();
+
+      // Auto-format: add AYK- prefix if just digits
+      if (/^\\d{4}$/.test(code)) {
+        code = 'AYK-' + code;
+        input.value = code;
+      }
+
+      if (!/^AYK-\\d{4}$/i.test(code)) {
+        errorEl.textContent = 'コードは「AYK-1234」の形式で入力してください';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+
+      errorEl.classList.add('hidden');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>連携中...';
+
+      try {
+        const res = await fetch('/api/liff/link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            line_user_id: lineUserId,
+            code: code,
+            display_name: displayName,
+          }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          errorEl.textContent = data.error || '連携に失敗しました';
+          errorEl.classList.remove('hidden');
+          return;
+        }
+
+        if (data.children && data.children.length === 1) {
+          window.location.href = '/my/' + data.children[0].view_token;
+        } else if (data.children && data.children.length > 1) {
+          showChildSelector(data.children);
+        } else {
+          showError('連携は成功しましたが、園児情報が取得できませんでした');
+        }
+      } catch (e) {
+        errorEl.textContent = '通信エラー: ' + (e.message || e);
+        errorEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-check mr-1"></i>連携する';
+      }
+    }
+
+    // Auto-format input
+    document.getElementById('link-code-input')?.addEventListener('input', function(e) {
+      let v = e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '');
+      // If user types just digits and length is 4, auto-add prefix
+      if (/^\\d{4}$/.test(v)) {
+        v = 'AYK-' + v;
+      }
+      e.target.value = v;
+    });
+
+    // Enter key support
+    document.getElementById('link-code-input')?.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') submitLinkCode();
+    });
+
+    // ── Start ──
+    initLiff();
+  </script>
+</body>
+</html>`;
+}
 
 // ═══════════════════════════════════════════
 // Parent-facing schedule calendar view

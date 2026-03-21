@@ -2648,12 +2648,16 @@ async function loadSubmissionStatus() {
           (ch.line_submitted_days > 0 ? ` <span class="text-[10px] text-green-500">(LINE: ${ch.line_submitted_days})</span>` : '')
         : '<span class="text-gray-300">-</span>';
 
-      // Find matching link code (unused) for this child — we'll just show a "-" for now
-      // The link code column will be managed from the link codes section
-      const codeStr = '<span class="text-gray-300 text-xs">-</span>';
+      // Active link code for this child
+      const codeStr = ch.active_code
+        ? '<span class="font-mono font-bold text-amber-700 text-xs">' + escapeHtml(ch.active_code) + '</span>'
+        : (ch.line_linked
+          ? '<span class="text-green-500 text-[10px]">連携済</span>'
+          : '<span class="text-gray-300 text-xs">-</span>');
 
-      // Calendar link
-      const calUrl = '/my/' + encodeURIComponent(ch.child_id);
+      // Calendar link (use view_token if available, fallback to child_id)
+      const calToken = ch.view_token || ch.child_id;
+      const calUrl = '/my/' + encodeURIComponent(calToken);
       const calLink = `<a href="${calUrl}" target="_blank" class="text-blue-500 hover:text-blue-700 text-xs" title="カレンダーを開く"><i class="fas fa-external-link-alt mr-0.5"></i>表示</a>`;
 
       return `<tr class="border-t border-gray-100 hover:bg-gray-50">
@@ -2688,7 +2692,7 @@ async function loadLinkCodes() {
   const tbody = document.getElementById('link-codes-table-body');
   if (!tbody) return;
 
-  tbody.innerHTML = '<tr><td colspan="4" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="5" class="text-center py-6 text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i>読み込み中...</td></tr>';
 
   try {
     const res = await fetch('/api/line/link-codes');
@@ -2697,13 +2701,19 @@ async function loadLinkCodes() {
     const codes = data.codes || [];
 
     if (codes.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="text-center py-6 text-gray-400"><i class="fas fa-key mr-1"></i>連携コードはまだ発行されていません</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center py-6 text-gray-400"><i class="fas fa-key mr-1"></i>連携コードはまだ発行されていません</td></tr>';
       return;
     }
 
     tbody.innerHTML = codes.map(code => {
       const isUsed = !!code.used_by_line_account_id;
       const codeDisplay = `<span class="font-mono font-bold ${isUsed ? 'text-gray-400' : 'text-amber-700'}">${escapeHtml(code.code)}</span>`;
+
+      // Target children
+      const children = code.target_children || [];
+      const childrenStr = children.length > 0
+        ? children.map(c => '<span class="text-xs bg-gray-100 px-1.5 py-0.5 rounded">' + escapeHtml(c.name) + '</span>').join(' ')
+        : '<span class="text-[10px] text-gray-300">旧形式（園児未指定）</span>';
 
       let statusBadge;
       if (isUsed) {
@@ -2728,6 +2738,7 @@ async function loadLinkCodes() {
 
       return `<tr class="border-t border-gray-100 hover:bg-gray-50">
         <td class="px-3 py-2">${codeDisplay}</td>
+        <td class="px-3 py-2">${childrenStr}</td>
         <td class="px-3 py-2 text-center">${statusBadge}</td>
         <td class="px-3 py-2 text-center">${usedByStr}</td>
         <td class="px-3 py-2 text-center">${expiresStr}</td>
@@ -2736,19 +2747,87 @@ async function loadLinkCodes() {
 
   } catch (e) {
     console.error('[LINE] Link codes load error:', e);
-    tbody.innerHTML = '<tr><td colspan="4" class="text-center py-6 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>読み込みエラー</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-6 text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>読み込みエラー</td></tr>';
   }
 }
 
 /**
- * Generate a new link code
+ * Generate a new link code (with child selection)
  */
+// Cache for children list
+let _childrenForLinkCode = [];
+
+function openLinkCodeModal() {
+  document.getElementById('link-code-modal').classList.remove('hidden');
+  loadChildrenForLinkCode();
+}
+
+function closeLinkCodeModal() {
+  document.getElementById('link-code-modal').classList.add('hidden');
+}
+
+async function loadChildrenForLinkCode() {
+  const container = document.getElementById('child-checkboxes');
+  try {
+    const res = await fetch('/api/children');
+    if (!res.ok) throw new Error('園児一覧取得エラー');
+    const data = await res.json();
+    _childrenForLinkCode = data.children || [];
+    renderChildCheckboxes(_childrenForLinkCode);
+  } catch (e) {
+    container.innerHTML = '<div class="p-4 text-center text-red-400 text-xs">読み込みに失敗しました</div>';
+  }
+}
+
+function renderChildCheckboxes(children) {
+  const container = document.getElementById('child-checkboxes');
+  if (children.length === 0) {
+    container.innerHTML = '<div class="p-4 text-center text-gray-400 text-xs">園児が登録されていません</div>';
+    return;
+  }
+  container.innerHTML = children.map(ch => {
+    const badge = ch.enrollment_type === '月極'
+      ? '<span class="text-[9px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full">' + escapeHtml(ch.enrollment_type) + '</span>'
+      : '<span class="text-[9px] bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded-full">' + escapeHtml(ch.enrollment_type) + '</span>';
+    return '<label class="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer child-cb-row" data-name="' + escapeHtml(ch.name) + '">' +
+      '<input type="checkbox" class="child-cb w-4 h-4 rounded" value="' + escapeHtml(ch.id) + '">' +
+      '<span class="text-xs text-gray-800">' + escapeHtml(ch.name) + '</span> ' + badge +
+      '</label>';
+  }).join('');
+}
+
+function filterChildCheckboxes() {
+  const q = (document.getElementById('child-search-input').value || '').trim().toLowerCase();
+  document.querySelectorAll('.child-cb-row').forEach(row => {
+    const name = (row.getAttribute('data-name') || '').toLowerCase();
+    row.style.display = !q || name.includes(q) ? '' : 'none';
+  });
+}
+
+function toggleAllChildren(checked) {
+  document.querySelectorAll('.child-cb').forEach(cb => {
+    if (cb.closest('.child-cb-row').style.display !== 'none') {
+      cb.checked = checked;
+    }
+  });
+}
+
 async function generateLinkCode() {
+  const checked = Array.from(document.querySelectorAll('.child-cb:checked')).map(cb => cb.value);
+  if (checked.length === 0) {
+    alert('対象園児を1人以上選択してください');
+    return;
+  }
+
+  const btn = document.getElementById('gen-code-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>発行中...';
+
   try {
     const res = await fetch('/api/line/link-codes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ child_ids: checked }),
     });
 
     if (!res.ok) {
@@ -2758,17 +2837,25 @@ async function generateLinkCode() {
     }
 
     const data = await res.json();
+    const childNames = (data.children || []).map(c => c.name).join('、');
+
+    closeLinkCodeModal();
+
     // Show success notification
     const notification = document.createElement('div');
-    notification.className = 'fixed top-4 right-4 z-50 bg-green-600 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium flex items-center gap-2';
-    notification.innerHTML = `<i class="fas fa-check-circle"></i>コード <span class="font-mono font-bold">${escapeHtml(data.code)}</span> を発行しました`;
+    notification.className = 'fixed top-4 right-4 z-50 bg-green-600 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium max-w-sm';
+    notification.innerHTML = '<i class="fas fa-check-circle mr-1"></i>コード <span class="font-mono font-bold">' +
+      escapeHtml(data.code) + '</span> を発行しました<br><span class="text-xs opacity-80">対象: ' + escapeHtml(childNames) + '</span>';
     document.body.appendChild(notification);
-    setTimeout(() => notification.remove(), 3000);
+    setTimeout(() => notification.remove(), 4000);
 
     // Reload link codes table
     loadLinkCodes();
   } catch (e) {
     alert('コード発行に失敗しました: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-key mr-1"></i>コード発行';
   }
 }
 

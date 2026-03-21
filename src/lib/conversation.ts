@@ -158,6 +158,12 @@ export async function findLineAccount(
 
 /**
  * 連携コード検証 & アカウント作成
+ * 
+ * セキュリティ修正 (2026-03-21):
+ *   旧: コード1つで nursery 全園児に紐づけ（テスト簡略化のMVP実装 → 本番NG）
+ *   新: link_code_children テーブルで指定された園児のみ紐付け
+ *   フォールバック: link_code_children が空の場合は link_codes に紐づく子なし → エラー
+ * 
  * @returns 紐づいた児童名の配列（成功時）、null（コード無効）
  */
 export async function verifyAndLinkCode(
@@ -165,8 +171,8 @@ export async function verifyAndLinkCode(
   lineUserId: string,
   code: string,
   displayName: string | null,
-): Promise<{ childNames: string[] } | null> {
-  // 1. コード検索
+): Promise<{ childNames: string[]; childIds: string[] } | null> {
+  // 1. コード検索（未使用 & 有効期限内）
   const linkCode = await db
     .prepare(
       `SELECT * FROM link_codes
@@ -178,7 +184,24 @@ export async function verifyAndLinkCode(
 
   if (!linkCode) return null;
 
-  // 2. line_accounts に登録（既存の場合は再利用）
+  // 2. link_code_children から対象園児を取得（セキュリティ修正）
+  const targetChildren = await db
+    .prepare(
+      `SELECT c.id, c.name FROM link_code_children lcc
+       JOIN children c ON c.id = lcc.child_id
+       WHERE lcc.link_code_id = ?
+       ORDER BY c.name`,
+    )
+    .bind(linkCode.id)
+    .all<{ id: string; name: string }>();
+
+  // 対象園児が未設定の場合はコード無効とする（全園児紐付け防止）
+  if (!targetChildren.results || targetChildren.results.length === 0) {
+    console.warn(`[LINE] link_code ${code} has no target children in link_code_children table`);
+    return null;
+  }
+
+  // 3. line_accounts に登録（既存の場合は再利用）
   let account = await findLineAccount(db, lineUserId);
   if (!account) {
     const accountId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
@@ -198,7 +221,7 @@ export async function verifyAndLinkCode(
     };
   }
 
-  // 3. link_codes を使用済みに更新
+  // 4. link_codes を使用済みに更新
   await db
     .prepare(
       `UPDATE link_codes SET used_by_line_account_id = ?, used_at = datetime('now') WHERE id = ?`,
@@ -206,18 +229,10 @@ export async function verifyAndLinkCode(
     .bind(account.id, linkCode.id)
     .run();
 
-  // 4. line_account_children に紐づけ
-  //    link_codes テーブルに child_id は入れていないので、
-  //    nursery_id 全児童を紐づける（テスト用。本番は園が個別指定）
-  //    → ここでは link_code にどの child を紐づけるか seed で設定済みと想定
-  //    MVP では link_code 1つ = 全園児にアクセス可能（テスト簡略化のため）
-  const children = await db
-    .prepare('SELECT id, name FROM children WHERE nursery_id = ?')
-    .bind(linkCode.nursery_id)
-    .all<{ id: string; name: string }>();
-
+  // 5. line_account_children に対象園児のみ紐づけ
   const childNames: string[] = [];
-  for (const child of children.results) {
+  const childIds: string[] = [];
+  for (const child of targetChildren.results) {
     await db
       .prepare(
         `INSERT OR IGNORE INTO line_account_children (id, line_account_id, child_id, created_at)
@@ -230,21 +245,22 @@ export async function verifyAndLinkCode(
       )
       .run();
     childNames.push(child.name);
+    childIds.push(child.id);
   }
 
-  return { childNames };
+  return { childNames, childIds };
 }
 
 /**
- * LINE アカウントに紐づく児童一覧を取得
+ * LINE アカウントに紐づく児童一覧を取得（view_token 含む）
  */
 export async function getLinkedChildren(
   db: D1Database,
   lineUserId: string,
-): Promise<{ id: string; name: string; enrollment_type: string }[]> {
+): Promise<{ id: string; name: string; enrollment_type: string; view_token: string | null }[]> {
   const results = await db
     .prepare(
-      `SELECT c.id, c.name, c.enrollment_type
+      `SELECT c.id, c.name, c.enrollment_type, c.view_token
        FROM children c
        JOIN line_account_children lac ON lac.child_id = c.id
        JOIN line_accounts la ON la.id = lac.line_account_id
@@ -252,7 +268,7 @@ export async function getLinkedChildren(
        ORDER BY c.name`,
     )
     .bind(lineUserId)
-    .all<{ id: string; name: string; enrollment_type: string }>();
+    .all<{ id: string; name: string; enrollment_type: string; view_token: string | null }>();
 
   return results.results;
 }
