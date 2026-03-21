@@ -13,6 +13,7 @@
 | **Staging** | https://ayukko-stg-1gv.pages.dev | ✅ v9.5 稼働中 |
 | LINE Health | https://ayukko-prod-2fx.pages.dev/api/line/health | ✅ |
 | LINE Webhook | https://ayukko-prod-2fx.pages.dev/api/line/webhook | ⚠️ 要Webhook URL更新 |
+| **LIFF入口** | https://ayukko-prod-2fx.pages.dev/line/entry | ✅ Phase 1実装済み |
 | 保護者カレンダー | https://ayukko-prod-2fx.pages.dev/my/{viewToken} | ✅ view_token 保護済み |
 
 ---
@@ -116,6 +117,49 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 | Channel ID | `2005879095` |
 | 友だち追加リンク | https://lin.ee/H02sZM5 |
 | Webhook URL | `https://ayukko-prod-2fx.pages.dev/api/line/webhook` ⚠️ LINE Developers で更新が必要 |
+| LIFF Entry URL | `https://ayukko-prod-2fx.pages.dev/line/entry` |
+| LIFF ID | `.dev.vars` の `LIFF_ID` (要LINE Developer Console登録) |
+
+---
+
+## LIFF統合 (Phase 1 — 2026-03-21 実装完了)
+
+### 概要
+
+LINEリッチメニューから共通LIFF URLへ遷移し、LIFF内でLINE userIdを取得。
+初回のみ連携コード入力し、以後自動的に本人の利用予定入力画面へリダイレクトする。
+
+### フロー
+
+```
+【初回利用】
+リッチメニュー「予定入力」
+  → GET /line/entry (LIFF SDK初期化)
+  → liff.getProfile() → userId取得
+  → GET /api/liff/me → {linked: false}
+  → 連携コード入力画面表示
+  → POST /api/liff/link → 園児紐付け
+  → /my/{view_token} にリダイレクト
+
+【2回目以降】
+リッチメニュー「予定入力」
+  → GET /line/entry
+  → GET /api/liff/me → {linked: true, children: [...]}
+  → 1名: 自動リダイレクト /my/{view_token}
+  → 複数名: 選択画面 → 選択後リダイレクト
+```
+
+### セキュリティ改善
+
+- **旧**: 連携コード1つで全園児(68名)にアクセス可能（MVPの暫定実装）
+- **新**: `link_code_children` テーブルで園児を個別指定。管理画面でコード発行時にチェックボックスで選択
+
+### 本番デプロイ前の必要作業
+
+1. **LINE Developer Console**: LIFFアプリを登録し、LIFF IDを取得
+2. **環境変数設定**: `wrangler pages secret put LIFF_ID --project-name ayukko-prod`
+3. **リッチメニュー**: LINE Official Account Managerで「予定入力」ボタンにLIFF URLを設定
+4. **DBマイグレーション**: `wrangler d1 migrations apply ayukko-production` (0006適用)
 
 ---
 
@@ -152,9 +196,16 @@ IDLE → LINKING → LINKED → SELECT_MONTH → COLLECTING → CONFIRM → SAVE
 |--------|------|------|
 | POST | `/api/line/webhook` | LINE Webhookエンドポイント |
 | GET | `/api/line/health` | LINE連携ステータス |
-| GET | `/api/line/link-codes` | 連携コード一覧 |
-| POST | `/api/line/link-codes` | 連携コード新規発行 |
-| GET | `/api/line/submission-status` | 月次提出状況（?year=&month=） |
+| GET | `/api/line/link-codes` | 連携コード一覧（target_children含む） |
+| POST | `/api/line/link-codes` | 連携コード新規発行（{child_ids: []} 必須） |
+| GET | `/api/line/submission-status` | 月次提出状況（?year=&month=、view_token/active_code含む） |
+
+### LIFF統合（Phase 1 — 2026-03-21 実装）
+| Method | Path | 説明 |
+|--------|------|------|
+| GET | `/line/entry` | LIFF起動ページ（リッチメニューのエンドポイント） |
+| GET | `/api/liff/me` | LINE userId → 連携状態・children・view_token |
+| POST | `/api/liff/link` | Web経由連携（{line_user_id, code, display_name?}） |
 
 ### ジョブ・テンプレート・帳票生成
 | Method | Path | 説明 |

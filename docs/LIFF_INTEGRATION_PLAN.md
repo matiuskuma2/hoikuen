@@ -1,7 +1,7 @@
 # LIFF統合計画書 — あゆっこ利用予定入力 LINE内完結化
 
-> **Version**: 1.0 (2026-03-21)
-> **Status**: 計画段階（承認待ち）
+> **Version**: 2.0 (2026-03-21)
+> **Status**: Phase 1 実装完了 ✅
 > **Author**: GenSpark AI Developer
 > **Reviewer**: モギモギ（関屋紘之）
 
@@ -43,17 +43,26 @@ LINE内ブラウザ（LIFF）で予定入力・確認・保存を完結させる
 | 管理画面「LINE予定収集」タブ | ✅ UI実装済み | `src/index.tsx` L534-700 | 連携コード発行・提出状況表示のUI完成 |
 | Follow/Unfollowハンドラー | ✅ 実装済み | `src/routes/line.ts` L147-189 | — |
 
-### 1-C. 全く未実装
+### 1-C. Phase 1 実装完了（2026-03-21）
+
+| 機能 | 実装状態 | ファイル | 備考 |
+|---|---|---|---|
+| LIFF SDK統合 | ✅ 実装済み | `src/index.tsx` L1379-1700 | LINE LIFF SDK 2.x 統合 |
+| LIFF起動ページ `/line/entry` | ✅ 実装済み | `src/index.tsx` L103-107, L1379-1700 | リッチメニューのエンドポイント |
+| Web経由連携API `POST /api/liff/link` | ✅ 実装済み | `src/routes/liff.ts` L67-149 | userId + code → 紐付け |
+| userId → view_token 自動取得API `GET /api/liff/me` | ✅ 実装済み | `src/routes/liff.ts` L24-62 | 連携状態確認 |
+| link_code_children テーブル | ✅ 実装済み | `migrations/0006_link_code_children.sql` | TD-1修正 |
+| verifyAndLinkCode セキュリティ修正 | ✅ 実装済み | `src/lib/conversation.ts` L169-252 | 全園児→指定園児のみ |
+| 管理画面 園児選択コード発行 | ✅ 実装済み | `src/routes/line.ts`, `public/static/app.js` | モーダルUI |
+| 提出状況に view_token / active_code 追加 | ✅ 実装済み | `src/routes/line.ts` L885-998 | カレンダーリンク改善 |
+| CORS LIFF対応 | ✅ 設定済み | `src/index.tsx` L24-44 | `.line.me`, `.line-scdn.net` 追加済み |
+
+### 1-D. 未実装（要外部設定 or Phase 2）
 
 | 機能 | 必要性 | 備考 |
 |---|---|---|
-| LIFF SDK統合 | 🔴 今回必須 | コードベースに一切なし |
-| LIFF起動ページ `/line/entry` | 🔴 今回必須 | — |
-| LIFF連携ページ `/line/link` | 🔴 今回必須 | — |
-| Web経由連携API `POST /api/liff/link` | 🔴 今回必須 | LINE Webhook経由の連携とは別経路 |
-| userId → view_token 自動取得API `GET /api/liff/me` | 🔴 今回必須 | — |
-| リッチメニュー設定 | 🔴 今回必須 | LINE Official Account Manager側 |
-| LINE Developer Console でのLIFFアプリ登録 | 🔴 今回必須 | LIFF IDの発行が前提 |
+| リッチメニュー設定 | 🔴 要手動設定 | LINE Official Account Manager側 |
+| LINE Developer Console でのLIFFアプリ登録 | 🔴 要手動設定 | LIFF IDの発行が前提 |
 | 毎月自動Push通知（未提出者催促） | 🟡 Phase 2 | — |
 
 ---
@@ -82,25 +91,13 @@ LINE内ブラウザ（LIFF）で予定入力・確認・保存を完結させる
 
 ## 3. 技術負債・矛盾点・リスクの完全洗い出し
 
-### TD-1: 🔴 link_codes → child紐付けが全園児一括（致命的）
+### TD-1: ~~🔴 link_codes → child紐付けが全園児一括（致命的）~~ ✅ 修正済み
 
-**現状**: `verifyAndLinkCode()` (conversation.ts L214-233)
-```typescript
-// MVP では link_code 1つ = 全園児にアクセス可能（テスト簡略化のため）
-const children = await db
-  .prepare('SELECT id, name FROM children WHERE nursery_id = ?')
-  .bind(linkCode.nursery_id)
-  .all();
-// → 全園児を line_account_children に INSERT
-```
-
-**問題**: コード1つで68名全員に紐づく。保護者Aが保護者Bの子の予定を見られる。
-**影響**: セキュリティ上、本番運用不可。
-
-**修正案**:
-- `link_codes` テーブルに `target_child_ids TEXT` カラムを追加（JSON配列）
-- または、新テーブル `link_code_children (link_code_id, child_id)` を作成
-- 職員が連携コード発行時に対象園児を指定する
+**修正内容** (2026-03-21):
+- `link_code_children` テーブルを新設 (`migrations/0006_link_code_children.sql`)
+- 管理画面でコード発行時に対象園児をチェックボックスで選択
+- `verifyAndLinkCode()` は `link_code_children` から指定園児のみ取得・紐付け
+- 対象園児が未設定のコードは無効とし、全園児紐付けを完全防止
 
 ### TD-2: 🟡 source_file の値が経路ごとにバラバラ
 
@@ -112,18 +109,9 @@ const children = await db
 
 **修正案**: LIFF経由は `'LIFF'` で統一。将来の分析で経路別集計が可能になる。
 
-### TD-3: 🟡 CORS設定にLINE LIFF domainが未追加
+### TD-3: ~~🟡 CORS設定にLINE LIFF domainが未追加~~ ✅ 修正済み
 
-**現状**: (index.tsx L24-36)
-```typescript
-origin.endsWith('.pages.dev') ||
-origin.includes('localhost') ||
-origin.includes('.sandbox.novita.ai') ||
-origin.includes('.genspark.ai')
-```
-
-**問題**: LIFF内ブラウザの origin は LINE のドメインから来る可能性がある。
-**修正案**: 実際のLIFF動作環境のoriginを確認し追加。ただしCloudflare Pagesの場合、同一ドメインからのリクエストになるため問題ない可能性が高い。要テスト。
+**修正内容**: `src/index.tsx` L34-35 に `.line.me` と `.line-scdn.net` を追加済み。
 
 ### TD-4: 🟡 view_token 直リンクとLIFF経路の二重導線
 
@@ -185,20 +173,20 @@ GET /api/liff/me?line_user_id={userId}
 
 ### 作るもの一覧
 
-#### Phase 1: LIFF統合（今回のスコープ）
+#### Phase 1: LIFF統合（✅ 実装完了 2026-03-21）
 
-| # | 種別 | パス/ファイル | 概要 |
-|---|---|---|---|
-| 1 | 新規ルート | `GET /line/entry` | LIFF起動ページ（HTML） |
-| 2 | 新規API | `GET /api/liff/me` | userId → 連携状態＋children＋view_token |
-| 3 | 新規API | `POST /api/liff/link` | Web経由連携（userId + code → 紐付け） |
-| 4 | DB変更 | `link_codes`に`target_child_ids`追加 or 新テーブル | TD-1修正 |
-| 5 | 既存修正 | `verifyAndLinkCode()` | 全園児一括紐付けを個別紐付けに変更 |
-| 6 | 既存修正 | CORS設定 | LIFF origin対応（必要なら） |
-| 7 | 管理画面修正 | LINE予定収集タブ | 連携コード発行時に対象園児を選択可能に |
-| 8 | 外部設定 | LINE Developer Console | LIFFアプリ登録、Webhook URL設定 |
-| 9 | 外部設定 | LINE Official Account Manager | リッチメニュー作成 |
-| 10 | 本番デプロイ | wrangler pages secret | LINE環境変数の本番設定確認 |
+| # | 種別 | パス/ファイル | 概要 | 状態 |
+|---|---|---|---|---|
+| 1 | 新規ルート | `GET /line/entry` | LIFF起動ページ（HTML） | ✅ 完了 |
+| 2 | 新規API | `GET /api/liff/me` | userId → 連携状態＋children＋view_token | ✅ 完了 |
+| 3 | 新規API | `POST /api/liff/link` | Web経由連携（userId + code → 紐付け） | ✅ 完了 |
+| 4 | DB変更 | `link_code_children` テーブル新設 | TD-1修正 | ✅ 完了 |
+| 5 | 既存修正 | `verifyAndLinkCode()` | 全園児一括紐付けを個別紐付けに変更 | ✅ 完了 |
+| 6 | 既存修正 | CORS設定 | LIFF origin対応 | ✅ 完了 |
+| 7 | 管理画面修正 | LINE予定収集タブ | 連携コード発行時に対象園児を選択可能に | ✅ 完了 |
+| 8 | 外部設定 | LINE Developer Console | LIFFアプリ登録、Webhook URL設定 | ⏳ 要手動設定 |
+| 9 | 外部設定 | LINE Official Account Manager | リッチメニュー作成 | ⏳ 要手動設定 |
+| 10 | 本番デプロイ | wrangler pages secret | LINE環境変数 + LIFF_ID の本番設定 | ⏳ 要設定 |
 
 #### Phase 2: 自動通知（次回スコープ）
 
