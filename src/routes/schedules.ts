@@ -13,6 +13,7 @@ import { Hono } from 'hono';
 import { DEFAULT_NURSERY_ID, type HonoEnv } from '../types/index';
 import { toMinutes, safeToMinutes, TIME_BOUNDARIES } from '../types/index';
 import { getAgeClassFromBirthDate, getFiscalYear, ageClassToLabel } from '../lib/age-class';
+import { calculateMealFlags } from '../lib/meal-rules';
 
 const scheduleRoutes = new Hono<HonoEnv>();
 
@@ -506,7 +507,10 @@ scheduleRoutes.get('/view/:token/:year/:month', async (c) => {
 
 // ── Submit schedule plans via view_token (parent mobile) ──
 // POST /api/schedules/submit/:token
-// Body: { year, month, days: [{ day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, breakfast_flag }] }
+// Body: { year, month, days: [{ day, planned_start, planned_end }] }
+//
+// 食事フラグは保護者に入力させず、サーバー側で時間から自動判定（SSOT: meal-rules.ts）
+// フロントから meal flag が送られてきても無視する（サーバー側計算を優先）
 scheduleRoutes.post('/submit/:token', async (c) => {
   try {
     const token = c.req.param('token');
@@ -539,6 +543,7 @@ scheduleRoutes.post('/submit/:token', async (c) => {
         day: number;
         planned_start?: string | null;
         planned_end?: string | null;
+        // 旧フロントとの後方互換のため型定義は残すが、サーバー側で上書き
         lunch_flag?: number;
         am_snack_flag?: number;
         pm_snack_flag?: number;
@@ -563,7 +568,7 @@ scheduleRoutes.post('/submit/:token', async (c) => {
     let deleted = 0;
 
     for (const dayData of body.days) {
-      const { day, planned_start, planned_end, lunch_flag, am_snack_flag, pm_snack_flag, dinner_flag, breakfast_flag } = dayData;
+      const { day, planned_start, planned_end } = dayData;
       if (!day || day < 1 || day > 31) continue;
 
       if (!planned_start && !planned_end) {
@@ -574,6 +579,9 @@ scheduleRoutes.post('/submit/:token', async (c) => {
         deleted++;
         continue;
       }
+
+      // 食事フラグはサーバー側で自動判定（保護者入力を無視）
+      const meals = calculateMealFlags(planned_start || '08:30', planned_end || '17:30');
 
       const planId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
       stmts.push(
@@ -592,7 +600,7 @@ scheduleRoutes.post('/submit/:token', async (c) => {
         `).bind(
           planId, child.id, body.year, body.month, day,
           planned_start || null, planned_end || null,
-          lunch_flag ?? 0, am_snack_flag ?? 0, pm_snack_flag ?? 0, dinner_flag ?? 0, breakfast_flag ?? 0
+          meals.lunch_flag, meals.am_snack_flag, meals.pm_snack_flag, meals.dinner_flag, meals.breakfast_flag
         )
       );
       upserted++;

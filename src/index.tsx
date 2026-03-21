@@ -1783,7 +1783,7 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       </div>
       <div class="bg-amber-50 rounded-lg px-3 py-2 text-center flex-1 border border-amber-200">
         <div id="sum-snack" class="text-lg font-bold text-amber-700">-</div>
-        <div class="text-[10px] text-amber-500">おやつ</div>
+        <div class="text-[10px] text-amber-500">午後おやつ</div>
       </div>
     </div>
 
@@ -1800,13 +1800,7 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
           <input type="time" id="def-end" value="17:30" class="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
         </div>
       </div>
-      <div class="flex flex-wrap gap-2 mb-2">
-        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-lunch" checked class="w-3.5 h-3.5 rounded"> 昼食</label>
-        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-am" class="w-3.5 h-3.5 rounded"> 朝おやつ</label>
-        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-pm" checked class="w-3.5 h-3.5 rounded"> 午後おやつ</label>
-        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-dinner" class="w-3.5 h-3.5 rounded"> 夕食</label>
-        <label class="flex items-center gap-1 text-xs"><input type="checkbox" id="def-bf" class="w-3.5 h-3.5 rounded"> 朝食</label>
-      </div>
+      <p class="text-[10px] text-gray-500 mb-2"><i class="fas fa-info-circle mr-1"></i>食事は時間から自動で設定されます</p>
       <button onclick="applyDefaults()" class="w-full bg-amber-500 text-white py-2 rounded-lg text-xs font-medium hover:bg-amber-600">
         <i class="fas fa-check mr-1"></i>平日すべてに適用
       </button>
@@ -1866,12 +1860,8 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
             <input type="time" id="modal-end" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mt-1">
           </div>
         </div>
-        <div class="flex flex-wrap gap-3">
-          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-lunch" class="w-4 h-4 rounded"> 昼食</label>
-          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-am" class="w-4 h-4 rounded"> 朝おやつ</label>
-          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-pm" class="w-4 h-4 rounded"> 午後おやつ</label>
-          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-dinner" class="w-4 h-4 rounded"> 夕食</label>
-          <label class="flex items-center gap-1.5 text-sm"><input type="checkbox" id="modal-bf" class="w-4 h-4 rounded"> 朝食</label>
+        <div id="modal-meals" class="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+          <i class="fas fa-utensils mr-1"></i><span id="modal-meals-text">食事は時間から自動設定されます</span>
         </div>
         <div class="flex gap-2 pt-2">
           <button onclick="clearDay()" class="flex-1 bg-gray-100 text-gray-600 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-200">
@@ -1905,8 +1895,26 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
     let editMode = false;
     let editingDay = null;
     let childId = null;
-    // Local edits: { day: { start, end, lunch, am, pm, dinner, bf, deleted } }
+    // Local edits: { day: { start, end, deleted } }
+    // 食事フラグはサーバー側で自動計算（保護者には入力させない）
     let localEdits = {};
+
+    // 食事フラグ自動計算（サーバー側 meal-rules.ts と同一ロジック）
+    function autoCalcMeals(start, end) {
+      if (!start || !end) return { lunch: false, am: false, pm: false, dinner: false, bf: false };
+      const [sh,sm] = start.split(':').map(Number);
+      const [eh,em] = end.split(':').map(Number);
+      const startMin = sh*60+sm;
+      const endMin = eh*60+em;
+      const isNight = startMin >= 19*60;
+      return {
+        bf: startMin < 12*60 || isNight,
+        lunch: startMin < 12*60,
+        am: false,
+        pm: endMin >= 15*60,
+        dinner: false,
+      };
+    }
 
     async function loadSchedule() {
       const grid = document.getElementById('cal-grid');
@@ -1967,10 +1975,20 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       const edit = localEdits[d.day];
       if (edit) {
         if (edit.deleted) return { has_plan: false, start: null, end: null, lunch: false, am: false, pm: false, dinner: false, bf: false };
+        const meals = autoCalcMeals(edit.start, edit.end);
         return {
           has_plan: !!(edit.start || edit.end),
           start: edit.start, end: edit.end,
-          lunch: edit.lunch, am: edit.am, pm: edit.pm, dinner: edit.dinner, bf: edit.bf,
+          lunch: meals.lunch, am: meals.am, pm: meals.pm, dinner: meals.dinner, bf: meals.bf,
+        };
+      }
+      // DBからの値も時間から再計算して表示（表示一貫性のため）
+      if (d.has_plan && d.planned_start && d.planned_end) {
+        const meals = autoCalcMeals(d.planned_start, d.planned_end);
+        return {
+          has_plan: true,
+          start: d.planned_start, end: d.planned_end,
+          lunch: meals.lunch, am: meals.am, pm: meals.pm, dinner: meals.dinner, bf: meals.bf,
         };
       }
       return {
@@ -2090,15 +2108,10 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       if (!scheduleData) return;
       const start = document.getElementById('def-start').value;
       const end = document.getElementById('def-end').value;
-      const lunch = document.getElementById('def-lunch').checked;
-      const am = document.getElementById('def-am').checked;
-      const pm = document.getElementById('def-pm').checked;
-      const dinner = document.getElementById('def-dinner').checked;
-      const bf = document.getElementById('def-bf').checked;
 
       for (const d of scheduleData.days) {
         if (d.is_weekend) continue;
-        localEdits[d.day] = { start, end, lunch, am, pm, dinner, bf };
+        localEdits[d.day] = { start, end };
       }
       renderAll();
       updateSaveBar();
@@ -2115,13 +2128,24 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       document.getElementById('modal-title').textContent = currentMonth + '月' + day + '日（' + wd + '）';
       document.getElementById('modal-start').value = dd.start || '08:30';
       document.getElementById('modal-end').value = dd.end || '17:30';
-      document.getElementById('modal-lunch').checked = dd.has_plan ? dd.lunch : true;
-      document.getElementById('modal-am').checked = dd.am;
-      document.getElementById('modal-pm').checked = dd.has_plan ? dd.pm : true;
-      document.getElementById('modal-dinner').checked = dd.dinner;
-      document.getElementById('modal-bf').checked = dd.bf;
+      updateModalMeals();
+
+      // 時間変更時に食事プレビュー更新
+      document.getElementById('modal-start').onchange = updateModalMeals;
+      document.getElementById('modal-end').onchange = updateModalMeals;
 
       document.getElementById('day-modal').classList.remove('hidden');
+    }
+
+    function updateModalMeals() {
+      const s = document.getElementById('modal-start').value;
+      const e = document.getElementById('modal-end').value;
+      const m = autoCalcMeals(s, e);
+      const items = [];
+      if (m.bf) items.push('朝食');
+      if (m.lunch) items.push('昼食');
+      if (m.pm) items.push('午後おやつ');
+      document.getElementById('modal-meals-text').textContent = items.length > 0 ? items.join('・') + '（自動）' : '食事なし';
     }
 
     function closeDayModal() {
@@ -2134,11 +2158,6 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
       localEdits[editingDay] = {
         start: document.getElementById('modal-start').value || null,
         end: document.getElementById('modal-end').value || null,
-        lunch: document.getElementById('modal-lunch').checked,
-        am: document.getElementById('modal-am').checked,
-        pm: document.getElementById('modal-pm').checked,
-        dinner: document.getElementById('modal-dinner').checked,
-        bf: document.getElementById('modal-bf').checked,
       };
       closeDayModal();
       renderAll();
@@ -2176,15 +2195,11 @@ function mySchedulePage(token: string, defaultYear: string, defaultMonth: string
         if (edit.deleted) {
           days.push({ day, planned_start: null, planned_end: null });
         } else {
+          // 食事フラグは送らない（サーバー側で自動計算）
           days.push({
             day,
             planned_start: edit.start || null,
             planned_end: edit.end || null,
-            lunch_flag: edit.lunch ? 1 : 0,
-            am_snack_flag: edit.am ? 1 : 0,
-            pm_snack_flag: edit.pm ? 1 : 0,
-            dinner_flag: edit.dinner ? 1 : 0,
-            breakfast_flag: edit.bf ? 1 : 0,
           });
         }
       }
